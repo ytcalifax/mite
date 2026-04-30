@@ -12,6 +12,7 @@ const global = struct {
     var scrollbar_drag_offset: f32 = 0;
     var selection_fade: f32 = 0;
     var cursor_phase: f32 = 0;
+    var config: Config = undefined;
 };
 
 const MouseCapture = enum {
@@ -162,6 +163,17 @@ pub fn main() !void {
     //     break :blk try Cmdline.parse(&args_it);
     // };
 
+    var config_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer config_arena.deinit();
+    global.config = Config.load(config_arena.allocator()) catch |err| blk: {
+        std.log.err("failed to load config: {}", .{err});
+        // provide minimum fonts if load fails
+        const names = config_arena.allocator().alloc([]const u8, 2) catch @panic("OOM");
+        names[0] = "Consolas 7NF";
+        names[1] = "Consolas";
+        break :blk Config{ .font_names = names };
+    };
+
     const opt: struct {
         window_placement: WindowPlacementOptions = .{},
     } = .{};
@@ -197,7 +209,7 @@ pub fn main() !void {
     };
 
     global.icons = getIcons(dpi);
-    global.renderer = d3d11.init(@max(dpi.x, dpi.y));
+    global.renderer = d3d11.init(@max(dpi.x, dpi.y), &global.config);
     const cell_size = global.renderer.cell_size;
     const placement = calcWindowPlacement(
         maybe_monitor,
@@ -263,7 +275,8 @@ pub fn main() !void {
     }
     {
         // Title bar color (COLORREF = 0x00BBGGRR)
-        const caption_color: u32 = 0x00120B0F; // RGB(0x0F, 0x0B, 0x12) - darker, matches gradient tint
+        // Match the top of the purple gradient in the shader (0.08, 0.06, 0.10)
+        const caption_color: u32 = 0x00190F14; 
         const hr = win32.DwmSetWindowAttribute(hwnd, win32.DWMWA_CAPTION_COLOR, &caption_color, @sizeOf(@TypeOf(caption_color)));
         if (hr < 0) std.log.warn("DwmSetWindowAttribute caption color failed, hresult=0x{x}", .{@as(u32, @bitCast(hr))});
     }
@@ -1560,6 +1573,7 @@ fn oom(e: error{OutOfMemory}) noreturn {
 }
 
 const d3d11 = @import("win32/d3d11.zig");
+const Config = @import("Config.zig").Config;
 const vt = @import("vt");
 const std = @import("std");
 const win32 = @import("win32").everything;

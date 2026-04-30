@@ -4,6 +4,7 @@ const std = @import("std");
 const vt = @import("vt");
 const win32 = @import("win32").everything;
 const GlyphIndexCache = @import("GlyphIndexCache.zig");
+const Config = @import("../Config.zig").Config;
 
 const log = std.log.scoped(.d3d);
 
@@ -17,6 +18,10 @@ const shader = struct {
         scrollbar_height: f32,
         scrollbar_x: f32,
         scrollbar_width: f32,
+        background: Rgba8,
+        foreground: Rgba8,
+        cursor_color: Rgba8,
+        opacity: f32,
     };
     const Cell = extern struct {
         glyph_index: u32,
@@ -30,18 +35,15 @@ const Rgba8 = packed struct(u32) {
     b: u8,
     g: u8,
     r: u8,
-    fn fromU24(c: u24) Rgba8 {
+    fn fromU24(c: u24, a: u8) Rgba8 {
         return .{
             .r = @intCast((c >> 16) & 0xFF),
             .g = @intCast((c >> 8) & 0xFF),
             .b = @intCast(c & 0xFF),
-            .a = 255,
+            .a = a,
         };
     }
 };
-
-const default_fg: u24 = 0xc8c4d0;
-const default_bg: u24 = 0x2a2a2a;
 
 // D3D11 core
 device: *win32.ID3D11Device,
@@ -76,6 +78,8 @@ staging_texture: StagingTexture = .{},
 cell_size: win32.SIZE,
 cell_size_xy: CellXY,
 
+config: *const Config,
+
 const scrollbar_logical_width: u16 = 14;
 
 pub fn scrollbarWidth(dpi: u32) u16 {
@@ -108,49 +112,44 @@ fn measureCellSize(dwrite_factory: *win32.IDWriteFactory, text_format: *win32.ID
     };
 }
 
-fn createTextFormat(dwrite_factory: *win32.IDWriteFactory, dpi: u32) *win32.IDWriteTextFormat {
+fn createTextFormat(dwrite_factory: *win32.IDWriteFactory, dpi: u32, config: *const Config) *win32.IDWriteTextFormat {
     var text_format: *win32.IDWriteTextFormat = undefined;
-    var hr = dwrite_factory.CreateTextFormat(
-        win32.L("Consolas 7NF"),
+    for (config.font_names) |name| {
+        const max_u16 = 256;
+        var name_u16: [max_u16:0]u16 = undefined;
+        const len = std.unicode.utf8ToUtf16Le(name_u16[0..max_u16], name) catch continue;
+        name_u16[len] = 0;
+
+        const hr = dwrite_factory.CreateTextFormat(
+            &name_u16,
+            null,
+            .NORMAL,
+            .NORMAL,
+            .NORMAL,
+            win32.scaleDpi(f32, config.font_size, dpi),
+            win32.L(""),
+            &text_format,
+        );
+        if (hr >= 0) return text_format;
+    }
+
+    const hr = dwrite_factory.CreateTextFormat(
+        win32.L(""),
         null,
         .NORMAL,
         .NORMAL,
         .NORMAL,
-        win32.scaleDpi(f32, 16.0, dpi),
+        win32.scaleDpi(f32, config.font_size, dpi),
         win32.L(""),
         &text_format,
     );
-    if (hr < 0) {
-        hr = dwrite_factory.CreateTextFormat(
-            win32.L("Consolas"),
-            null,
-            .NORMAL,
-            .NORMAL,
-            .NORMAL,
-            win32.scaleDpi(f32, 16.0, dpi),
-            win32.L(""),
-            &text_format,
-        );
-    }
-    if (hr < 0) {
-        hr = dwrite_factory.CreateTextFormat(
-            win32.L(""),
-            null,
-            .NORMAL,
-            .NORMAL,
-            .NORMAL,
-            win32.scaleDpi(f32, 16.0, dpi),
-            win32.L(""),
-            &text_format,
-        );
-    }
     if (hr < 0) fatalHr("CreateTextFormat", hr);
     return text_format;
 }
 
 pub fn cellSizeForDpi(self: *D3d11Renderer, dpi: u32) win32.SIZE {
     if (dpi == self.dpi) return self.cell_size;
-    const text_format = createTextFormat(self.dwrite_factory, dpi);
+    const text_format = createTextFormat(self.dwrite_factory, dpi, self.config);
     defer _ = text_format.IUnknown.Release();
     return measureCellSize(self.dwrite_factory, text_format);
 }
@@ -163,7 +162,7 @@ const CellXY = struct {
     }
 };
 
-pub fn init(dpi: u32) D3d11Renderer {
+pub fn init(dpi: u32, config: *const Config) D3d11Renderer {
     // Create D3D11 device
     const levels = [_]win32.D3D_FEATURE_LEVEL{.@"11_0"};
     var device: *win32.ID3D11Device = undefined;
@@ -240,7 +239,7 @@ pub fn init(dpi: u32) D3d11Renderer {
         if (hr < 0) fatalHr("DWriteCreateFactory", hr);
     }
 
-    const text_format = createTextFormat(dwrite_factory, dpi);
+    const text_format = createTextFormat(dwrite_factory, dpi, config);
 
     const cell_size = measureCellSize(dwrite_factory, text_format);
     const cell_size_xy: CellXY = .{
@@ -275,13 +274,14 @@ pub fn init(dpi: u32) D3d11Renderer {
         },
         .cell_size_xy = cell_size_xy,
         .dpi = dpi,
+        .config = config,
     };
 }
 
 pub fn updateDpi(self: *D3d11Renderer, dpi: u32) void {
     if (dpi == self.dpi) return;
     _ = self.text_format.IUnknown.Release();
-    self.text_format = createTextFormat(self.dwrite_factory, dpi);
+    self.text_format = createTextFormat(self.dwrite_factory, dpi, self.config);
     self.dpi = dpi;
 
     const new_cs = measureCellSize(self.dwrite_factory, self.text_format);
@@ -377,6 +377,10 @@ pub fn render(
     const shader_col: u32 = @divTrunc(grid_w + cs.x - 1, cs.x);
     const shader_row: u32 = @divTrunc(client_h + cs.y - 1, cs.y);
 
+    const default_fg = Config.parseColor(self.config.foreground);
+    const default_bg = Config.parseColor(self.config.background);
+    const cursor_color = Config.parseColor(self.config.cursor);
+
     // Update constant buffer
     {
         var mapped: win32.D3D11_MAPPED_SUBRESOURCE = undefined;
@@ -394,6 +398,10 @@ pub fn render(
         config.cell_size[1] = cs.y;
         config.col_count = shader_col;
         config.row_count = shader_row;
+        config.background = Rgba8.fromU24(default_bg, 255);
+        config.foreground = Rgba8.fromU24(default_fg, 255);
+        config.cursor_color = Rgba8.fromU24(cursor_color, 255);
+        config.opacity = self.config.opacity;
 
         // Compute scrollbar geometry in pixels (within the reserved scrollbar area)
         // Only show the thumb when scrolled up or mouse is hovering over the scrollbar
@@ -494,8 +502,8 @@ pub fn render(
                     else => {},
                 }
 
-                var bg = if (cell_bg == default_bg) bg_rgba else Rgba8.fromU24(cell_bg);
-                var fg = Rgba8.fromU24(cell_fg);
+                var bg = if (cell_bg == default_bg) bg_rgba else Rgba8.fromU24(cell_bg, 255);
+                var fg = Rgba8.fromU24(cell_fg, 255);
 
                 // Highlight selected cells (with fade)
                 if (screen.selection) |sel| {
@@ -562,8 +570,8 @@ pub fn render(
                 const idx = cy * shader_col + cx;
                 const orig_bg = cells_out[idx].background;
                 const orig_fg = cells_out[idx].foreground;
-                const inv_bg = Rgba8.fromU24(default_fg);
-                const inv_fg = Rgba8.fromU24(default_bg);
+                const inv_bg = Rgba8.fromU24(cursor_color, 255);
+                const inv_fg = Rgba8.fromU24(default_bg, 255);
                 cells_out[idx].background = lerpRgba8(orig_bg, inv_bg, cursor_alpha);
                 cells_out[idx].foreground = lerpRgba8(orig_fg, inv_fg, cursor_alpha);
             }
@@ -571,8 +579,8 @@ pub fn render(
 
         // Draw resize overlay (e.g. "80x25")
         if (resizing) {
-            const overlay_bg = Rgba8.fromU24(0x333333);
-            const overlay_fg = Rgba8.fromU24(0xffffff);
+            const overlay_bg = Rgba8.fromU24(0x333333, 255);
+            const overlay_fg = Rgba8.fromU24(0xffffff, 255);
 
             var text_buf: [20]u8 = undefined;
             const text = std.fmt.bufPrint(&text_buf, "{}x{}", .{ term.cols, term.rows }) catch unreachable;

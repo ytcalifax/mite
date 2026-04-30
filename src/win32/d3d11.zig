@@ -334,6 +334,7 @@ pub fn render(
     resizing: bool,
     mouse_in_scrollbar: bool,
     selection_fade: f32,
+    cursor_alpha: f32,
 ) void {
     const sz = win32.getClientSize(hwnd);
     const client_w: u32 = @intCast(sz.cx);
@@ -553,14 +554,18 @@ pub fn render(
             });
         }
 
-        // Draw cursor
+        // Draw cursor (smooth blend between original colors and inverted colors)
         if (screen.viewportIsBottom() and term.modes.get(.cursor_visible)) {
             const cx: u32 = screen.cursor.x;
             const cy: u32 = screen.cursor.y;
             if (cy < shader_row and cx < shader_col) {
                 const idx = cy * shader_col + cx;
-                cells_out[idx].background = Rgba8.fromU24(default_fg);
-                cells_out[idx].foreground = Rgba8.fromU24(default_bg);
+                const orig_bg = cells_out[idx].background;
+                const orig_fg = cells_out[idx].foreground;
+                const inv_bg = Rgba8.fromU24(default_fg);
+                const inv_fg = Rgba8.fromU24(default_bg);
+                cells_out[idx].background = lerpRgba8(orig_bg, inv_bg, cursor_alpha);
+                cells_out[idx].foreground = lerpRgba8(orig_fg, inv_fg, cursor_alpha);
             }
         }
 

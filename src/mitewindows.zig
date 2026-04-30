@@ -11,6 +11,7 @@ const global = struct {
     var mouse_capture: MouseCapture = .none;
     var scrollbar_drag_offset: f32 = 0;
     var selection_fade: f32 = 0;
+    var cursor_phase: f32 = 0;
 };
 
 const MouseCapture = enum {
@@ -29,6 +30,7 @@ const window_style_ex = win32.WINDOW_EX_STYLE{
 const WM_APP_CHILD_PROCESS_DATA = win32.WM_APP + 0;
 const WM_APP_CHILD_PROCESS_DATA_RESULT = 0x1bb502b6;
 const TIMER_SELECTION_FADE: usize = 1;
+const TIMER_CURSOR: usize = 2;
 
 const State = struct {
     hwnd: win32.HWND,
@@ -36,6 +38,7 @@ const State = struct {
     child_process: ChildProcess,
     term: *vt.Terminal,
     vt_stream: vt.Stream(VtHandler),
+    previous_placement: win32.WINDOWPLACEMENT = undefined,
     pub fn reportError(state: *State, comptime fmt: []const u8, args: anytype) void {
         _ = state;
         std.log.err("error: " ++ fmt, args);
@@ -522,6 +525,31 @@ fn setWindowPosRect(hwnd: win32.HWND, rect: win32.RECT) void {
     )) win32.panicWin32("SetWindowPos", win32.GetLastError());
 }
 
+fn toggleFullscreen(hwnd: win32.HWND) void {
+    const state = stateFromHwnd(hwnd);
+    const style = win32.GetWindowLongW(hwnd, win32.GWL_STYLE);
+    const overlapped_window_style = @as(i32, @bitCast(win32.WS_OVERLAPPEDWINDOW));
+    if ((style & overlapped_window_style) != 0) {
+        var mi: win32.MONITORINFO = undefined;
+        mi.cbSize = @sizeOf(win32.MONITORINFO);
+        state.previous_placement.length = @sizeOf(win32.WINDOWPLACEMENT);
+        if (win32.GetWindowPlacement(hwnd, &state.previous_placement) != 0 and
+            win32.GetMonitorInfoW(win32.MonitorFromWindow(hwnd, win32.MONITOR_DEFAULTTONEAREST), &mi) != 0)
+        {
+            _ = win32.SetWindowLongW(hwnd, win32.GWL_STYLE, style & ~overlapped_window_style);
+            _ = win32.SetWindowPos(hwnd, null, mi.rcMonitor.left, mi.rcMonitor.top,
+                mi.rcMonitor.right - mi.rcMonitor.left,
+                mi.rcMonitor.bottom - mi.rcMonitor.top,
+                .{ .NOOWNERZORDER = 1, .DRAWFRAME = 1 });
+        }
+    } else {
+        _ = win32.SetWindowLongW(hwnd, win32.GWL_STYLE, style | overlapped_window_style);
+        _ = win32.SetWindowPlacement(hwnd, &state.previous_placement);
+        _ = win32.SetWindowPos(hwnd, null, 0, 0, 0, 0,
+            .{ .NOMOVE = 1, .NOSIZE = 1, .NOZORDER = 1, .NOOWNERZORDER = 1, .DRAWFRAME = 1 });
+    }
+}
+
 fn WndProc(
     hwnd: win32.HWND,
     msg: u32,
@@ -573,6 +601,8 @@ fn WndProc(
             };
             std.debug.assert(&(global.state.?) == stateFromHwnd(hwnd));
 
+            global.cursor_phase = 0.0;
+            _ = win32.SetTimer(hwnd, TIMER_CURSOR, 16, null);
             // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
             // put in a test pattern for the moment
             // screen.clear();
@@ -812,7 +842,8 @@ fn WndProc(
             }) catch std.debug.panic("{f}", .{resize_err});
             // Render immediately to avoid flicker - with NOREDIRECTIONBITMAP
             // there's no DWM surface to show between resize and next WM_PAINT.
-            global.renderer.render(hwnd, state.term, global.resizing, global.mouse_in_scrollbar, if (global.mouse_capture == .selecting) 1.0 else global.selection_fade);
+            const cursor_alpha: f32 = 0.5 * (1.0 + std.math.sin(global.cursor_phase));
+            global.renderer.render(hwnd, state.term, global.resizing, global.mouse_in_scrollbar, if (global.mouse_capture == .selecting) 1.0 else global.selection_fade, cursor_alpha);
             _ = win32.ValidateRect(hwnd, null);
             return 0;
         },
@@ -821,7 +852,8 @@ fn WndProc(
             defer win32.endPaint(hwnd, &ps);
 
             const state = stateFromHwnd(hwnd);
-            global.renderer.render(hwnd, state.term, global.resizing, global.mouse_in_scrollbar, if (global.mouse_capture == .selecting) 1.0 else global.selection_fade);
+            const cursor_alpha: f32 = 0.5 * (1.0 + std.math.sin(global.cursor_phase));
+            global.renderer.render(hwnd, state.term, global.resizing, global.mouse_in_scrollbar, if (global.mouse_capture == .selecting) 1.0 else global.selection_fade, cursor_alpha);
             return 0;
         },
         win32.WM_GETDPISCALEDSIZE => {
@@ -910,7 +942,10 @@ fn WndProc(
                 @intFromEnum(win32.VK_F8) => "\x1b[19~",
                 @intFromEnum(win32.VK_F9) => "\x1b[20~",
                 @intFromEnum(win32.VK_F10) => "\x1b[21~",
-                @intFromEnum(win32.VK_F11) => "\x1b[23~",
+                @intFromEnum(win32.VK_F11) => {
+                    toggleFullscreen(hwnd);
+                    return 0;
+                },
                 @intFromEnum(win32.VK_F12) => "\x1b[24~",
                 else => null,
             };
@@ -976,6 +1011,10 @@ fn WndProc(
                     const state = stateFromHwnd(hwnd);
                     state.term.screens.active.clearSelection();
                 }
+                win32.invalidateHwnd(hwnd);
+            } else if (wparam == TIMER_CURSOR) {
+                global.cursor_phase += 0.15;
+                if (global.cursor_phase > 6.283185) global.cursor_phase -= 6.283185;
                 win32.invalidateHwnd(hwnd);
             }
             return 0;

@@ -101,15 +101,15 @@ pub fn main() !void {
             break :blk now().since(damage_deferred.?) >= render_deadline_ns;
         };
         if (do_render) {
-            // Advance cursor animation based on elapsed time
             const now_instant = now();
             const dt_ns = now_instant.since(last_instant);
             last_instant = now_instant;
+
             const dt_ms: f32 = @as(f32, @as(f64, dt_ns) / @as(f64, std.time.ns_per_ms));
-            // update phase: full cycle ~1000ms -> delta = 2*pi * dt_ms / 1000
-            cursor_phase += 2.0 * 3.14159265 * (dt_ms / 1000.0);
-            // keep phase bounded
+
+            cursor_phase += 2.5 * 3.14159265 * (dt_ms / 1000.0);
             if (cursor_phase > 2.0 * 3.14159265) cursor_phase -= 2.0 * 3.14159265;
+
             const cursor_alpha: f32 = 0.5 * (1.0 + std.math.sin(cursor_phase));
 
             try backend.render(&term, cursor_alpha);

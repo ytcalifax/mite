@@ -984,9 +984,8 @@ fn WndProc(
                 }
                 win32.invalidateHwnd(hwnd);
             } else if (wparam == TIMER_CURSOR) {
-                // Advance cursor animation phase and trigger repaint
-                global.cursor_phase += 0.1; // ~1s period at 16ms ticks
-                if (global.cursor_phase > 2.0 * 3.14159265 * 1000.0) global.cursor_phase -= 2.0 * 3.14159265 * 1000.0;
+                global.cursor_phase += 0.15;
+                if (global.cursor_phase > 6.283185) global.cursor_phase -= 6.283185;
                 win32.invalidateHwnd(hwnd);
             }
             return 0;

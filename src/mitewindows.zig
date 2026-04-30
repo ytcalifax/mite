@@ -1535,6 +1535,10 @@ fn pasteClipboard(hwnd: win32.HWND, state: *State) void {
 fn pasteUtf16(state: *State, utf16: [*:0]const u16, writer: *std.Io.Writer) error{ WriteFailed, Reported }!void {
     var i: usize = 0;
     while (utf16[i] != 0) {
+        if (utf16[i] == '\r' and utf16[i + 1] == '\n') {
+            i += 1;
+            continue;
+        }
         const cp: u21 = blk: {
             if (std.unicode.utf16IsHighSurrogate(utf16[i])) {
                 const high = utf16[i];

@@ -110,16 +110,40 @@ fn measureCellSize(dwrite_factory: *win32.IDWriteFactory, text_format: *win32.ID
 
 fn createTextFormat(dwrite_factory: *win32.IDWriteFactory, dpi: u32) *win32.IDWriteTextFormat {
     var text_format: *win32.IDWriteTextFormat = undefined;
-    const hr = dwrite_factory.CreateTextFormat(
-        win32.L("Cascadia Mono"),
+    var hr = dwrite_factory.CreateTextFormat(
+        win32.L("Consolas 7NF"),
         null,
         .NORMAL,
         .NORMAL,
         .NORMAL,
-        win32.scaleDpi(f32, 14.0, dpi),
+        win32.scaleDpi(f32, 16.0, dpi),
         win32.L(""),
         &text_format,
     );
+    if (hr < 0) {
+        hr = dwrite_factory.CreateTextFormat(
+            win32.L("Consolas"),
+            null,
+            .NORMAL,
+            .NORMAL,
+            .NORMAL,
+            win32.scaleDpi(f32, 16.0, dpi),
+            win32.L(""),
+            &text_format,
+        );
+    }
+    if (hr < 0) {
+        hr = dwrite_factory.CreateTextFormat(
+            win32.L(""),
+            null,
+            .NORMAL,
+            .NORMAL,
+            .NORMAL,
+            win32.scaleDpi(f32, 16.0, dpi),
+            win32.L(""),
+            &text_format,
+        );
+    }
     if (hr < 0) fatalHr("CreateTextFormat", hr);
     return text_format;
 }

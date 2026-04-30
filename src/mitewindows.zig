@@ -11,6 +11,7 @@ const global = struct {
     var mouse_capture: MouseCapture = .none;
     var scrollbar_drag_offset: f32 = 0;
     var selection_fade: f32 = 0;
+    var cursor_phase: f32 = 0;
 };
 
 const MouseCapture = enum {
@@ -29,6 +30,7 @@ const window_style_ex = win32.WINDOW_EX_STYLE{
 const WM_APP_CHILD_PROCESS_DATA = win32.WM_APP + 0;
 const WM_APP_CHILD_PROCESS_DATA_RESULT = 0x1bb502b6;
 const TIMER_SELECTION_FADE: usize = 1;
+const TIMER_CURSOR: usize = 2;
 
 const State = struct {
     hwnd: win32.HWND,
@@ -573,6 +575,8 @@ fn WndProc(
             };
             std.debug.assert(&(global.state.?) == stateFromHwnd(hwnd));
 
+            global.cursor_phase = 0.0;
+            _ = win32.SetTimer(hwnd, TIMER_CURSOR, 16, null);
             // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
             // put in a test pattern for the moment
             // screen.clear();
@@ -812,7 +816,8 @@ fn WndProc(
             }) catch std.debug.panic("{f}", .{resize_err});
             // Render immediately to avoid flicker - with NOREDIRECTIONBITMAP
             // there's no DWM surface to show between resize and next WM_PAINT.
-            global.renderer.render(hwnd, state.term, global.resizing, global.mouse_in_scrollbar, if (global.mouse_capture == .selecting) 1.0 else global.selection_fade);
+            const cursor_alpha: f32 = 0.5 * (1.0 + std.math.sin(global.cursor_phase));
+            global.renderer.render(hwnd, state.term, global.resizing, global.mouse_in_scrollbar, if (global.mouse_capture == .selecting) 1.0 else global.selection_fade, cursor_alpha);
             _ = win32.ValidateRect(hwnd, null);
             return 0;
         },
@@ -821,7 +826,8 @@ fn WndProc(
             defer win32.endPaint(hwnd, &ps);
 
             const state = stateFromHwnd(hwnd);
-            global.renderer.render(hwnd, state.term, global.resizing, global.mouse_in_scrollbar, if (global.mouse_capture == .selecting) 1.0 else global.selection_fade);
+            const cursor_alpha: f32 = 0.5 * (1.0 + std.math.sin(global.cursor_phase));
+            global.renderer.render(hwnd, state.term, global.resizing, global.mouse_in_scrollbar, if (global.mouse_capture == .selecting) 1.0 else global.selection_fade, cursor_alpha);
             return 0;
         },
         win32.WM_GETDPISCALEDSIZE => {
@@ -976,6 +982,11 @@ fn WndProc(
                     const state = stateFromHwnd(hwnd);
                     state.term.screens.active.clearSelection();
                 }
+                win32.invalidateHwnd(hwnd);
+            } else if (wparam == TIMER_CURSOR) {
+                // Advance cursor animation phase and trigger repaint
+                global.cursor_phase += 0.1; // ~1s period at 16ms ticks
+                if (global.cursor_phase > 2.0 * 3.14159265 * 1000.0) global.cursor_phase -= 2.0 * 3.14159265 * 1000.0;
                 win32.invalidateHwnd(hwnd);
             }
             return 0;

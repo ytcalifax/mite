@@ -93,7 +93,7 @@ pub const State = struct {
         );
     }
 
-    pub fn render(self: *State, backend: *mite.Backend, term: *vt.Terminal) error{WriteFailed}!void {
+    pub fn render(self: *State, backend: *mite.Backend, term: *vt.Terminal, cursor_alpha: f32) error{WriteFailed}!void {
         try doRender(
             &self.sink,
             self.ids.window(),
@@ -110,6 +110,7 @@ pub const State = struct {
             self.dpi_scale,
             &self.ttf_font,
             backend.window_state,
+            cursor_alpha,
         );
         backend.window_state.resizing = false;
     }
@@ -373,6 +374,19 @@ fn updateSolidFill(
     if (current_color.* != null) try x11.render.FreePicture(sink, render_opcode, id);
     try x11.render.CreateSolidFill(sink, render_opcode, id, .fromRgb24(new_color));
     current_color.* = new_color;
+}
+
+fn lerpU24(a: u24, b: u24, t: f32) u24 {
+    const ar: u8 = @intCast((a >> 16) & 0xFF);
+    const ag: u8 = @intCast((a >> 8) & 0xFF);
+    const ab: u8 = @intCast(a & 0xFF);
+    const br: u8 = @intCast((b >> 16) & 0xFF);
+    const bg: u8 = @intCast((b >> 8) & 0xFF);
+    const bb: u8 = @intCast(b & 0xFF);
+    const rf: f32 = @floatFromInt(ar) + (@floatFromInt(br) - @floatFromInt(ar)) * t;
+    const gf: f32 = @floatFromInt(ag) + (@floatFromInt(bg) - @floatFromInt(ag)) * t;
+    const bf: f32 = @floatFromInt(ab) + (@floatFromInt(bb) - @floatFromInt(ab)) * t;
+    return @as(u24, @intCast(@as(u32, @intFromFloat(rf)))) << 16 | @as(u24, @intCast(@as(u32, @intFromFloat(gf)))) << 8 | @as(u24, @intCast(@as(u32, @intFromFloat(bf))));
 }
 
 comptime {
@@ -721,7 +735,8 @@ fn doRender(
     win_height: u16,
     dpi_scale: f32,
     ttf_font: *TtfFont,
-    window_state: mite.WindowState,
+) window_state: mite.WindowState,
+    cursor_alpha: f32,
 ) error{WriteFailed}!void {
     try x11.render.FillRectangles(sink, ttf_font.render_ext_opcode, .{
         .picture_operation = .src,
@@ -801,10 +816,37 @@ fn doRender(
             const cursor_screen_row: u16 = @intCast(cursor_y);
             if (std.math.cast(i16, cursor_x *| ttf_font.cell_width)) |px| {
                 const py: i16 = std.math.cast(i16, cursor_screen_row *| ttf_font.cell_height) orelse return;
+                // Determine the original cell colors so we can blend to the inverted cursor colors
+                const cursor_pin = screen.pages.getCell(.{ .viewport = .{ .x = cursor_x, .y = cursor_y } });
+                var orig_bg: u24 = mite.default_bg;
+                var orig_fg: u24 = mite.default_fg;
+                if (cursor_pin) |pin| {
+                    const cc = pin.cell.*;
+                    // Resolve style colors similar to normal rendering
+                    if (cc.style_id != 0) {
+                        const style = pin.page.styles.get(pin.page.memory, cc.style_id).*;
+                        orig_fg = mite.resolveColor(style.fg_color, &term.colors.palette.current, mite.default_fg);
+                        orig_bg = mite.resolveColor(style.bg_color, &term.colors.palette.current, mite.default_bg);
+                        if (style.flags.inverse) {
+                            const tmp = orig_fg;
+                            orig_fg = orig_bg;
+                            orig_bg = tmp;
+                        }
+                    }
+                    switch (cc.content_tag) {
+                        .bg_color_palette => orig_bg = mite.rgbToU24(term.colors.palette.current[cc.content.color_palette]),
+                        .bg_color_rgb => {
+                            const rgb = cc.content.color_rgb;
+                            orig_bg = @as(u24, rgb.r) << 16 | @as(u24, rgb.g) << 8 | rgb.b;
+                        },
+                        else => {},
+                    }
+                }
+                const blended_bg = lerpU24(orig_bg, mite.default_fg, cursor_alpha);
                 try x11.render.FillRectangles(sink, ttf_font.render_ext_opcode, .{
                     .picture_operation = .src,
                     .dst_picture = ttf_font.dst_picture,
-                    .color = .fromRgb24(mite.default_fg),
+                    .color = .fromRgb24(blended_bg),
                     .rects = .init(@ptrCast(&x11.Rectangle{ .x = px, .y = py, .width = ttf_font.cell_width, .height = ttf_font.cell_height }), 1),
                 });
             }
@@ -862,7 +904,15 @@ fn doRender(
                     };
                     const cp: u21 = if (raw_cp == 0) ' ' else raw_cp;
                     if (cp != ' ') {
-                        try ttf_font.putFgGlyph(sink, cursor_screen_row, cursor_x, cp, mite.default_bg);
+                        // Determine original fg so we can blend toward inverted fg (default_bg)
+                        var orig_fg: u24 = mite.default_fg;
+                        if (cursor_cell.style_id != 0) {
+                            const style = pin.page.styles.get(pin.page.memory, cursor_cell.style_id).*;
+                            orig_fg = mite.resolveColor(style.fg_color, &term.colors.palette.current, mite.default_fg);
+                            if (style.flags.inverse) orig_fg = mite.resolveColor(style.bg_color, &term.colors.palette.current, mite.default_bg);
+                        }
+                        const blended_fg = lerpU24(orig_fg, mite.default_bg, cursor_alpha);
+                        try ttf_font.putFgGlyph(sink, cursor_screen_row, cursor_x, cp, blended_fg);
                     }
                 }
             } else if (std.math.cast(i16, cursor_x *| font_width)) |px| {

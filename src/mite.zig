@@ -54,6 +54,8 @@ pub fn main() !void {
     var damaged = false;
     var damage_deferred: ?std.time.Instant = null;
     const render_deadline_ns: u64 = 8 * std.time.ns_per_ms; // ~120fps max
+    var cursor_phase: f32 = 0.0;
+    var last_instant: std.time.Instant = now();
     while (true) {
         try backend.flush();
         const ready = try posix.poll(&poll_fds, if (damaged) @as(i32, 0) else -1);
@@ -99,7 +101,18 @@ pub fn main() !void {
             break :blk now().since(damage_deferred.?) >= render_deadline_ns;
         };
         if (do_render) {
-            try backend.render(&term);
+            // Advance cursor animation based on elapsed time
+            const now_instant = now();
+            const dt_ns = now_instant.since(last_instant);
+            last_instant = now_instant;
+            const dt_ms: f32 = @as(f32, @as(f64, dt_ns) / @as(f64, std.time.ns_per_ms));
+            // update phase: full cycle ~1000ms -> delta = 2*pi * dt_ms / 1000
+            cursor_phase += 2.0 * 3.14159265 * (dt_ms / 1000.0);
+            // keep phase bounded
+            if (cursor_phase > 2.0 * 3.14159265) cursor_phase -= 2.0 * 3.14159265;
+            const cursor_alpha: f32 = 0.5 * (1.0 + std.math.sin(cursor_phase));
+
+            try backend.render(&term, cursor_alpha);
             damaged = false;
             damage_deferred = null;
         }
@@ -229,9 +242,9 @@ pub const Backend = struct {
         };
     }
 
-    pub fn render(self: *Backend, term: *vt.Terminal) !void {
+    pub fn render(self: *Backend, term: *vt.Terminal, cursor_alpha: f32) !void {
         switch (self.specific) {
-            inline else => |*s| s.render(self, term) catch |err| switch (err) {
+            inline else => |*s| s.render(self, term, cursor_alpha) catch |err| switch (err) {
                 error.WriteFailed => return handleWriteErr(&self.io_pinned.stream_writer),
             },
         }

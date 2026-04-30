@@ -246,7 +246,7 @@ pub const State = struct {
         );
     }
 
-    pub fn render(self: *State, backend: *mite.Backend, term: *vt.Terminal) error{WriteFailed}!void {
+    pub fn render(self: *State, backend: *mite.Backend, term: *vt.Terminal, cursor_alpha: f32) error{WriteFailed}!void {
         const w, const h = self.pixelSize();
         doRender(
             self.shm_buf.pixel_data,
@@ -261,6 +261,7 @@ pub const State = struct {
             term,
             backend.cellHeight(),
             backend.window_state,
+            cursor_alpha,
         );
         const writer = &backend.io_pinned.stream_writer.interface;
         try wl.surface.attach(writer, self.ids.get(.surface), self.ids.get(.buffer), 0, 0);
@@ -629,6 +630,7 @@ fn doRender(
     term: *vt.Terminal,
     visible_rows: u16,
     window_state: mite.WindowState,
+    cursor_alpha: f32,
 ) void {
     // Clear with background color
     const bg_pixel = rgb24ToArgb32(mite.default_bg);
@@ -695,7 +697,34 @@ fn doRender(
         if (cursor_y < visible_rows) {
             const cursor_screen_row: i16 = @intCast(cursor_y);
             if (window_state.focused) {
-                putGlyph(pixel_data, win_width, win_height, cell_width, cell_height, font_ascent, glyph_cache, ttf, ttf_scale, cursor_screen_row, cursor_x, ' ', mite.default_bg, mite.default_fg);
+                // Blend cursor colors against the underlying cell
+                const cursor_pin = screen.pages.getCell(.{ .viewport = .{ .x = cursor_x, .y = cursor_y } });
+                var orig_bg: u24 = mite.default_bg;
+                var orig_fg: u24 = mite.default_fg;
+                if (cursor_pin) |pin| {
+                    const cc = pin.cell.*;
+                    if (cc.style_id != 0) {
+                        const style = pin.page.styles.get(pin.page.memory, cc.style_id).*;
+                        orig_fg = mite.resolveColor(style.fg_color, &term.colors.palette.current, mite.default_fg);
+                        orig_bg = mite.resolveColor(style.bg_color, &term.colors.palette.current, mite.default_bg);
+                        if (style.flags.inverse) {
+                            const tmp = orig_fg;
+                            orig_fg = orig_bg;
+                            orig_bg = tmp;
+                        }
+                    }
+                    switch (cc.content_tag) {
+                        .bg_color_palette => orig_bg = mite.rgbToU24(term.colors.palette.current[cc.content.color_palette]),
+                        .bg_color_rgb => {
+                            const rgb = cc.content.color_rgb;
+                            orig_bg = @as(u24, rgb.r) << 16 | @as(u24, rgb.g) << 8 | rgb.b;
+                        },
+                        else => {},
+                    }
+                }
+                const blended_bg = lerpU24(orig_bg, mite.default_fg, cursor_alpha);
+                const blended_fg = lerpU24(orig_fg, mite.default_bg, cursor_alpha);
+                putGlyph(pixel_data, win_width, win_height, cell_width, cell_height, font_ascent, glyph_cache, ttf, ttf_scale, cursor_screen_row, cursor_x, ' ', blended_fg, blended_bg);
             } else {
                 drawRect(pixel_data, win_width, win_height, @as(i32, cursor_x) * cell_width, @as(i32, cursor_screen_row) * cell_height, cell_width, cell_height, mite.default_fg);
             }
@@ -852,6 +881,19 @@ fn drawRect(pixel_data: [*]u32, win_width: u32, win_height: u32, px: i32, py: i3
 
 fn rgb24ToArgb32(rgb: u24) u32 {
     return 0xFF000000 | @as(u32, rgb);
+}
+
+fn lerpU24(a: u24, b: u24, t: f32) u24 {
+    const ar: u8 = @intCast((a >> 16) & 0xFF);
+    const ag: u8 = @intCast((a >> 8) & 0xFF);
+    const ab: u8 = @intCast(a & 0xFF);
+    const br: u8 = @intCast((b >> 16) & 0xFF);
+    const bg: u8 = @intCast((b >> 8) & 0xFF);
+    const bb: u8 = @intCast(b & 0xFF);
+    const rf: f32 = @floatFromInt(ar) + (@floatFromInt(br) - @floatFromInt(ar)) * t;
+    const gf: f32 = @floatFromInt(ag) + (@floatFromInt(bg) - @floatFromInt(ag)) * t;
+    const bf: f32 = @floatFromInt(ab) + (@floatFromInt(bb) - @floatFromInt(ab)) * t;
+    return @as(u24, @intCast(@as(u32, @intFromFloat(rf)))) << 16 | @as(u24, @intCast(@as(u32, @intFromFloat(gf)))) << 8 | @as(u24, @intCast(@as(u32, @intFromFloat(bf))));
 }
 
 // Evdev keycode to byte mapping for US keyboard layout

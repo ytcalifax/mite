@@ -7,6 +7,7 @@ pub const Config = struct {
     background: []const u8 = "0x140f1a",
     cursor: []const u8 = "0xffffff",
     opacity: f32 = 0.94,
+    shell: []const u8 = "C:\\Windows\\System32\\cmd.exe",
 
     pub fn load(allocator: std.mem.Allocator) !Config {
         const home = std.process.getEnvVarOwned(allocator, "USERPROFILE") catch |err| {
@@ -36,7 +37,8 @@ pub const Config = struct {
                     \\  "foreground": "0xc8c4d0",
                     \\  "background": "0x140f1a",
                     \\  "cursor": "0xffffff",
-                    \\  "opacity": 0.94
+                    \\  "opacity": 0.94,
+                    \\  "shell": "C:\\\\Windows\\\\System32\\\\cmd.exe"
                     \\}
                 ;
                 var new_file = try std.fs.createFileAbsolute(config_path, .{});
@@ -59,6 +61,7 @@ pub const Config = struct {
         result.foreground = try allocator.dupe(u8, parsed.value.foreground);
         result.background = try allocator.dupe(u8, parsed.value.background);
         result.cursor = try allocator.dupe(u8, parsed.value.cursor);
+        result.shell = try allocator.dupe(u8, parsed.value.shell);
         
         const names = try allocator.alloc([]const u8, parsed.value.font_names.len);
         for (parsed.value.font_names, 0..) |name, i| {

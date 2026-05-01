@@ -588,11 +588,19 @@ fn WndProc(
 
             var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer arena.deinit();
+            const shell_w = blk: {
+                const u16_len = std.unicode.calcUtf16LeLen(global.config.shell) catch |e| std.debug.panic("calcUtf16LeLen: {}", .{e});
+                const buf = arena.allocator().alloc(u16, u16_len + 1) catch |e| std.debug.panic("alloc: {}", .{e});
+                const len = std.unicode.utf8ToUtf16Le(buf, global.config.shell) catch |e| std.debug.panic("utf8ToUtf16Le: {}", .{e});
+                std.debug.assert(len == u16_len);
+                buf[len] = 0;
+                break :blk buf[0..len :0];
+            };
             var err: Error = undefined;
             const child_process = ChildProcess.startConPtyWin32(
                 &err,
                 arena.allocator(),
-                win32.L("C:\\Windows\\System32\\cmd.exe"),
+                shell_w.ptr,
                 null,
                 hwnd,
                 WM_APP_CHILD_PROCESS_DATA,

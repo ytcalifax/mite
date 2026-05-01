@@ -36,12 +36,36 @@ const global = struct {
 };
 
 fn updateWindowTitle(hwnd: win32.HWND, title: []const u8) void {
-    const full_title = std.fmt.allocPrint(global.gpa.allocator(), "{s} — Mite", .{title}) catch return;
-    defer global.gpa.allocator().free(full_title);
+    const allocator = global.gpa.allocator();
+
+    // Initialize as empty
+    var sanitized: std.ArrayList(u8) = .empty;
+    // Pass the allocator to deinit
+    defer sanitized.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < title.len) {
+        const char = title[i];
+        // Pass the allocator to append
+        sanitized.append(allocator, char) catch break;
+        if (char == '\\' or char == '/') {
+            if (i == 0 and i + 1 < title.len and title[i + 1] == char) {
+                sanitized.append(allocator, char) catch break;
+                i += 1;
+            }
+            while (i + 1 < title.len and title[i + 1] == char) {
+                i += 1;
+            }
+        }
+        i += 1;
+    }
+
+    const full_title = std.fmt.allocPrint(allocator, "{s} — mite.", .{sanitized.items}) catch return;
+    defer allocator.free(full_title);
 
     const u16_len = std.unicode.calcUtf16LeLen(full_title) catch return;
-    const buf = global.gpa.allocator().alloc(u16, u16_len + 1) catch return;
-    defer global.gpa.allocator().free(buf);
+    const buf = allocator.alloc(u16, u16_len + 1) catch return;
+    defer allocator.free(buf);
 
     const len = std.unicode.utf8ToUtf16Le(buf, full_title) catch return;
     buf[len] = 0;

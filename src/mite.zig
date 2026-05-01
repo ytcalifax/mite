@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const win32 = @import("win32").everything;
-const vt = @import("vt");
+const gvt = @import("vt");
 const d3d11 = @import("win32/d3d11.zig");
 const Config = @import("Config.zig").Config;
 const Cmdline = @import("Cmdline.zig");
@@ -35,12 +35,41 @@ const global = struct {
     var selection_fade: f32 = 0.0;
 };
 
-const VtStream = vt.Stream(vt.ReadonlyHandler);
+fn updateWindowTitle(hwnd: win32.HWND, title: []const u8) void {
+    const full_title = std.fmt.allocPrint(global.gpa.allocator(), "{s} — Mite", .{title}) catch return;
+    defer global.gpa.allocator().free(full_title);
+
+    const u16_len = std.unicode.calcUtf16LeLen(full_title) catch return;
+    const buf = global.gpa.allocator().alloc(u16, u16_len + 1) catch return;
+    defer global.gpa.allocator().free(buf);
+
+    const len = std.unicode.utf8ToUtf16Le(buf, full_title) catch return;
+    buf[len] = 0;
+    _ = win32.SetWindowTextW(hwnd, buf[0..len :0].ptr);
+}
+
+const MiteHandler = struct {
+    inner: gvt.ReadonlyHandler,
+    hwnd: win32.HWND,
+
+    pub fn deinit(self: *MiteHandler) void {
+        self.inner.deinit();
+    }
+
+    pub fn vt(self: *MiteHandler, comptime action: gvt.StreamAction.Tag, value: gvt.StreamAction.Value(action)) void {
+        if (action == .window_title) {
+            updateWindowTitle(self.hwnd, value.title);
+        }
+        self.inner.vt(action, value);
+    }
+};
+
+const VtStream = gvt.Stream(MiteHandler);
 
 const State = struct {
     hwnd: win32.HWND,
     child_process: ChildProcess,
-    term: *vt.Terminal,
+    term: *gvt.Terminal,
     vt_stream: VtStream,
     bounds: ?WindowBounds = null,
     previous_placement: win32.WINDOWPLACEMENT = undefined,
@@ -273,11 +302,11 @@ fn WndProc(
                 win32.ExitProcess(1);
             };
 
-            const term = std.heap.page_allocator.create(vt.Terminal) catch {
+            const term = std.heap.page_allocator.create(gvt.Terminal) catch {
                 log.err("Failed to allocate terminal state", .{});
                 win32.ExitProcess(1);
             };
-            term.* = vt.Terminal.init(global.term_arena.allocator(), .{
+            term.* = gvt.Terminal.init(global.term_arena.allocator(), .{
                 .cols = cell_count.col,
                 .rows = cell_count.row,
             }) catch |e| {
@@ -289,7 +318,10 @@ fn WndProc(
                 .hwnd = hwnd,
                 .child_process = child_process,
                 .term = term,
-                .vt_stream = VtStream.initAlloc(global.gpa.allocator(), term.vtHandler()),
+                .vt_stream = VtStream.initAlloc(global.gpa.allocator(), MiteHandler{
+                    .inner = term.vtHandler(),
+                    .hwnd = hwnd,
+                }),
             };
 
             global.cursor_phase = 0.0;
@@ -340,7 +372,7 @@ fn WndProc(
                 const row: usize = @intCast(@divTrunc(@max(mouse_y, 0), cs.cy));
                 if (screen.pages.pin(.{ .viewport = .{ .x = @intCast(col), .y = @intCast(row) } })) |pin| {
                     screen.clearSelection();
-                    const sel = vt.Selection.init(pin, pin, false);
+                    const sel = gvt.Selection.init(pin, pin, false);
                     screen.select(sel) catch |e| log.err("screen.select failed: {any}", .{e});
                     global.mouse_capture = .selecting;
                     _ = win32.SetCapture(hwnd);

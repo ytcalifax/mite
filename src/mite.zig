@@ -142,6 +142,38 @@ const WindowPlacement = struct {
     size: win32.SIZE,
 };
 
+/// Converts an RGB hex value (0xRRGGBB) to a Win32 COLORREF (0x00BBGGRR)
+fn rgbToColorRef(rgb: u24) u32 {
+    const r = (rgb >> 16) & 0xFF;
+    const g = (rgb >> 8) & 0xFF;
+    const b = rgb & 0xFF;
+    return (b << 16) | (g << 8) | r;
+}
+
+/// Applies the background and foreground colors from Config to the window frame
+fn applyWindowTheme(hwnd: win32.HWND, config: Config) void {
+    // 1. Enable Immersive Dark Mode
+    const dark_value: c_int = 1;
+    _ = win32.DwmSetWindowAttribute(hwnd, win32.DWMWA_USE_IMMERSIVE_DARK_MODE, &dark_value, @sizeOf(@TypeOf(dark_value)));
+
+    // 2. Parse and apply Background Color to Title Bar (Caption)
+    const bg_rgb = Config.parseColor(config.background) catch 0x140f1a;
+    const caption_color = rgbToColorRef(bg_rgb);
+    _ = win32.DwmSetWindowAttribute(hwnd, win32.DWMWA_CAPTION_COLOR, &caption_color, @sizeOf(@TypeOf(caption_color)));
+
+    // 3. Parse and apply Foreground Color to Title Bar Text
+    const fg_rgb = Config.parseColor(config.foreground) catch 0xc8c4d0;
+    const text_color = rgbToColorRef(fg_rgb);
+    _ = win32.DwmSetWindowAttribute(hwnd, win32.DWMWA_TEXT_COLOR, &text_color, @sizeOf(@TypeOf(text_color)));
+
+    // 4. (Optional) Match the window border to the background
+    _ = win32.DwmSetWindowAttribute(hwnd, win32.DWMWA_BORDER_COLOR, &caption_color, @sizeOf(@TypeOf(caption_color)));
+
+    // 5. Extend frame to ensure the color transition is seamless
+    const margins = win32.MARGINS{ .cxLeftWidth = 0, .cxRightWidth = 0, .cyTopHeight = 0, .cyBottomHeight = 0 };
+    _ = win32.DwmExtendFrameIntoClientArea(hwnd, &margins);
+}
+
 fn calcWindowPlacement(
     maybe_monitor: ?win32.HMONITOR,
     dpi: u32,
@@ -1199,12 +1231,7 @@ pub fn main() !void {
     ) orelse return error.CreateWindowFailed;
 
     {
-        const dark_value: c_int = 1;
-        _ = win32.DwmSetWindowAttribute(hwnd, win32.DWMWA_USE_IMMERSIVE_DARK_MODE, &dark_value, @sizeOf(@TypeOf(dark_value)));
-        const caption_color: u32 = 0x00190F14;
-        _ = win32.DwmSetWindowAttribute(hwnd, win32.DWMWA_CAPTION_COLOR, &caption_color, @sizeOf(@TypeOf(caption_color)));
-        const margins = win32.MARGINS{ .cxLeftWidth = 0, .cxRightWidth = 0, .cyTopHeight = 0, .cyBottomHeight = 0 };
-        _ = win32.DwmExtendFrameIntoClientArea(hwnd, &margins);
+       applyWindowTheme(hwnd, global.config);
     }
 
     _ = win32.UpdateWindow(hwnd);

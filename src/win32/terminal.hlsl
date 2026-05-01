@@ -46,38 +46,42 @@ float4 UnpackRgba(uint packed)
 }
 
 float4 PixelMain(float4 sv_pos : SV_POSITION) : SV_TARGET {
-    // Background gradient + dither (shared by grid and scrollbar)
+    // 1. Resolve the actual background color from your config
+    float4 config_bg = UnpackRgba(background);
+
+    // 2. Calculate dynamic background (replaces the hardcoded purple)
     float2 pos = sv_pos.xy / (cell_size * float2(col_count, row_count));
-    float3 purple_gradient = float3(
-        lerp(0.08, 0.08, pos.x),
-        lerp(0.06, 0.07, pos.y),
-        lerp(0.10, 0.09, (pos.x + pos.y) * 0.5)
+
+    // We apply a very subtle shift to your config color based on screen position
+    float3 dynamic_bg = config_bg.rgb + float3(
+        lerp(-0.005, 0.005, pos.x),
+        lerp(-0.01, 0.005, pos.y),
+        lerp(-0.005, 0.01, (pos.x + pos.y) * 0.5)
     );
+
+    // 3. Keep your original dither/noise logic
     float noise = frac(sin(dot(sv_pos.xy, float2(12.9898, 78.233))) * 43758.5453);
     noise = (noise - 0.5) / 255.0;
-    purple_gradient += noise;
+    dynamic_bg += noise;
 
     uint grid_pixel_width = col_count * cell_size.x;
 
-    // Scrollbar area (beyond the cell grid)
+    // 4. Scrollbar area
     if (sv_pos.x >= grid_pixel_width) {
-        float3 color;
-        float alpha;
+        float3 color = dynamic_bg;
+        float alpha = opacity;
 
-        color = purple_gradient;
-        alpha = opacity;
-
-        // Scrollbar thumb
+        // Scrollbar thumb - made slightly lighter than the background
         if (scrollbar_width > 0 &&
             sv_pos.y >= scrollbar_y && sv_pos.y < scrollbar_y + scrollbar_height)
         {
-            color = lerp(color, float3(0.03, 0.018, 0.04), 0.8);
+            color = lerp(color, float3(1.0, 1.0, 1.0), 0.05);
         }
 
         return float4(color * alpha, alpha);
     }
 
-    // Cell grid
+    // 5. Cell grid logic
     uint col = sv_pos.x / cell_size.x;
     uint row = sv_pos.y / cell_size.y;
     uint cell_index = row * col_count + col;
@@ -98,11 +102,12 @@ float4 PixelMain(float4 sv_pos : SV_POSITION) : SV_TARGET {
     uint2 texture_coord = glyph_cell_pos * cell_size + cell_pixel;
     float4 glyph_texel = glyph_texture.Load(int3(texture_coord, 0));
 
-    float3 blended_bg = lerp(purple_gradient, bg.rgb, bg.a);
+    // 6. Blending logic using the new dynamic_bg
+    float3 blended_bg = lerp(dynamic_bg, bg.rgb, bg.a);
     float3 color = lerp(blended_bg, fg.rgb, fg.a * glyph_texel.a);
     float alpha = lerp(opacity, 1.0, fg.a * glyph_texel.a);
 
-    // Cursor rendering
+    // 7. Cursor rendering
     if (col == cursor_x && row == cursor_y) {
         float4 cursor_color = UnpackRgba(cursor_color_packed);
         bool in_cursor = false;
@@ -117,14 +122,13 @@ float4 PixelMain(float4 sv_pos : SV_POSITION) : SV_TARGET {
         if (in_cursor) {
             if (cursor_style == 0) {
                 float3 inv_bg = cursor_color.rgb;
-                float3 inv_fg = UnpackRgba(background).rgb;
-                
+                float3 inv_fg = config_bg.rgb; // Use config background for the inverted text
+
                 float3 block_bg = lerp(blended_bg, inv_bg, cursor_alpha);
                 float3 block_fg = lerp(fg.rgb, inv_fg, cursor_alpha);
-                
+
                 color = lerp(block_bg, block_fg, fg.a * glyph_texel.a);
             } else {
-                // Pipe cursor: Draw a thin line
                 color = lerp(color, cursor_color.rgb, cursor_alpha);
             }
         }

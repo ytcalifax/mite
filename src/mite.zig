@@ -525,26 +525,28 @@ fn WndProc(
             return 0;
         },
         win32.WM_WINDOWPOSCHANGED => {
-            const state = stateFromHwnd(hwnd);
-            const client_size = win32.getClientSize(hwnd);
-            const cs = global.renderer.cell_size;
-            const grid_w = client_size.cx -| @as(i32, @intCast(d3d11.scrollbarWidth(win32.dpiFromHwnd(hwnd))));
-            const col_count: u16 = @intCast(@max(1, @divTrunc(grid_w, cs.cx)));
-            const row_count: u16 = @intCast(@max(1, @divTrunc(client_size.cy, cs.cy)));
+                    const state = stateFromHwnd(hwnd);
+                    const client_size = win32.getClientSize(hwnd);
+                    const cs = global.renderer.cell_size;
+                    const grid_w = client_size.cx -| @as(i32, @intCast(d3d11.scrollbarWidth(win32.dpiFromHwnd(hwnd))));
+                    const col_count: u16 = @intCast(@max(1, @divTrunc(grid_w, cs.cx)));
+                    const row_count: u16 = @intCast(@max(1, @divTrunc(client_size.cy, cs.cy)));
 
-            state.term.resize(global.term_arena.allocator(), col_count, row_count) catch |e|
-                log.err("Terminal.resize failed: {any}", .{e});
-            var resize_err: Error = undefined;
-            state.child_process.resize(&resize_err, .{
-                .row = row_count,
-                .col = col_count,
-            }) catch |e| log.err("ChildProcess.resize failed: {any} - {s}", .{ e, resize_err.what });
+                    if (state.term.cols != col_count or state.term.rows != row_count) {
+                        state.term.resize(global.term_arena.allocator(), col_count, row_count) catch |e|
+                            log.err("Terminal.resize failed: {any}", .{e});
+                        var resize_err: Error = undefined;
+                        state.child_process.resize(&resize_err, .{
+                            .row = row_count,
+                            .col = col_count,
+                        }) catch |e| log.err("ChildProcess.resize failed: {any} - {s}", .{ e, resize_err.what });
+                    }
 
-            const cursor_alpha = Config.calculateCursorAlpha(global.cursor_phase, global.config);
-            global.renderer.render(hwnd, state.term, global.resizing, global.mouse_in_scrollbar, if (global.mouse_capture == .selecting) 1.0 else global.selection_fade, cursor_alpha);
-            _ = win32.ValidateRect(hwnd, null);
-            return 0;
-        },
+                    const cursor_alpha = Config.calculateCursorAlpha(global.cursor_phase, global.config);
+                    global.renderer.render(hwnd, state.term, global.resizing, global.mouse_in_scrollbar, if (global.mouse_capture == .selecting) 1.0 else global.selection_fade, cursor_alpha);
+                    _ = win32.ValidateRect(hwnd, null);
+                    return 0;
+                },
         win32.WM_PAINT => {
             _, var ps = win32.beginPaint(hwnd);
             defer win32.endPaint(hwnd, &ps);

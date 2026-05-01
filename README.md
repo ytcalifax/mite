@@ -1,15 +1,10 @@
 <h1>
 <p align="center">
-  <img width="256" height="206" alt="CuteMite" src="src/mite.png" />
-  <br>mite
+  mite
 </p>
 </h1>
 
 A native terminal emulator with libghostty at its core.
-
-### Linux
-
-Compiles to a static universal exe that connects directly to either X11 or Wayland. For wayland, ensure XDG_SESSION_TYPE=wayland.
 
 ### Windows
 

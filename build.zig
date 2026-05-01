@@ -1,41 +1,33 @@
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    const target = b.standardTargetOptions(.{ .default_target = .{
+        .cpu_arch = null,
+        .os_tag = .windows,
+        .abi = null,
+    } });
     const optimize = b.standardOptimizeOption(.{});
 
     const vt = b.dependency("ghostty", .{}).module("ghostty-vt");
 
-    const appicon_dep = b.dependency("appicon", .{});
-    const x11_mod = if (b.lazyDependency("x11", .{})) |dep| dep.module("x11") else null;
-    const appicon_mod = appicon.createModule(b, appicon_dep, .{ .x11 = x11_mod });
-    const miteicon = appicon.createLinuxIcon(b, appicon_dep, appicon_mod, &.{
-        .{ .source = b.path("src/mite.png"), .sizes = &.{ 16, 32, 48, 128 } },
-    });
-
-    const main = b.path(switch (target.result.os.tag) {
-        .windows => "src/mitewindows.zig",
-        else => "src/mite.zig",
-    });
     const exe = b.addExecutable(.{
         .name = "mite",
         .root_module = b.createModule(.{
-            .root_source_file = main,
+            .root_source_file = b.path("src/mite.zig"),
             .target = target,
             .optimize = optimize,
-            // Windows uses std.Thread for the ConPTY read thread.
-            .single_threaded = if (target.result.os.tag == .windows) null else true,
         }),
         .win32_manifest = b.path("src/win32/mite.manifest"),
     });
-    addImports(b, target.result, exe.root_module, miteicon, vt);
+
+    if (b.lazyDependency("win32", .{})) |win32_dep| {
+        exe.root_module.addImport("win32", win32_dep.module("win32"));
+        exe.root_module.addIncludePath(b.path("src/win32"));
+    }
+    exe.root_module.addImport("vt", vt);
 
     exe.addWin32ResourceFile(.{
         .file = b.path("src/win32/mite.rc"),
-        // TODO: add include path if/when we use appicon to generate our .ico file
-        // .include_paths = &.{ico.dirname()},
     });
-    if (target.result.os.tag == .windows) {
-        exe.subsystem = .Windows;
-    }
+    exe.subsystem = .Windows;
 
     const install = b.addInstallArtifact(exe, .{});
     b.getInstallStep().dependOn(&install.step);
@@ -47,47 +39,19 @@ pub fn build(b: *std.Build) void {
 
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = main,
+            .root_source_file = b.path("src/mite.zig"),
             .target = target,
             .optimize = optimize,
         }),
     });
-    addImports(b, target.result, tests.root_module, miteicon, vt);
+    if (b.lazyDependency("win32", .{})) |win32_dep| {
+        tests.root_module.addImport("win32", win32_dep.module("win32"));
+        tests.root_module.addIncludePath(b.path("src/win32"));
+    }
+    tests.root_module.addImport("vt", vt);
+
     const run_tests = b.addRunArtifact(tests);
     b.step("test", "Run unit tests").dependOn(&run_tests.step);
 }
 
-fn addImports(
-    b: *std.Build,
-    target: std.Target,
-    mod: *std.Build.Module,
-    miteicon: *std.Build.Module,
-    vt: *std.Build.Module,
-) void {
-    mod.addImport("miteicon", miteicon);
-    mod.addImport("vt", vt);
-    switch (target.os.tag) {
-        .windows => if (b.lazyDependency("win32", .{})) |win32_dep| {
-            mod.addImport("win32", win32_dep.module("win32"));
-            mod.addIncludePath(b.path("src/win32"));
-        },
-        else => {
-            if (b.lazyDependency("x11", .{})) |x11_dep| {
-                mod.addImport("x11", x11_dep.module("x11"));
-            }
-            if (b.lazyDependency("TrueType", .{})) |true_type_dep| {
-                mod.addImport("TrueType", true_type_dep.module("TrueType"));
-            }
-        },
-    }
-    switch (target.os.tag) {
-        .linux => if (b.lazyDependency("wayland", .{})) |wayland_dep| {
-            mod.addImport("wl", wayland_dep.module("wl"));
-        },
-        else => {},
-    }
-}
-
-const builtin = @import("builtin");
 const std = @import("std");
-const appicon = @import("appicon");

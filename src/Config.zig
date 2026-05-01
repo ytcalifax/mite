@@ -14,7 +14,7 @@ pub const Config = struct {
     shell: []const u8 = "C:\\Windows\\System32\\cmd.exe",
 
     pub fn load(allocator: std.mem.Allocator) !Config {
-        const home = std.process.getEnvVarOwned(allocator, if (builtin.os.tag == .windows) "USERPROFILE" else "HOME") catch |err| {
+        const home = std.process.getEnvVarOwned(allocator, "USERPROFILE") catch |err| {
             if (err == error.EnvironmentVariableNotFound) {
                 return error.HomeNotFound;
             }

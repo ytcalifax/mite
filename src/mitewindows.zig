@@ -863,7 +863,7 @@ fn WndProc(
             }) catch std.debug.panic("{f}", .{resize_err});
             // Render immediately to avoid flicker - with NOREDIRECTIONBITMAP
             // there's no DWM surface to show between resize and next WM_PAINT.
-            const cursor_alpha: f32 = 0.5 * (1.0 + std.math.sin(global.cursor_phase));
+            const cursor_alpha = Config.calculateCursorAlpha(global.cursor_phase, global.config);
             global.renderer.render(hwnd, state.term, global.resizing, global.mouse_in_scrollbar, if (global.mouse_capture == .selecting) 1.0 else global.selection_fade, cursor_alpha);
             _ = win32.ValidateRect(hwnd, null);
             return 0;
@@ -873,7 +873,7 @@ fn WndProc(
             defer win32.endPaint(hwnd, &ps);
 
             const state = stateFromHwnd(hwnd);
-            const cursor_alpha: f32 = 0.5 * (1.0 + std.math.sin(global.cursor_phase));
+            const cursor_alpha = Config.calculateCursorAlpha(global.cursor_phase, global.config);
             global.renderer.render(hwnd, state.term, global.resizing, global.mouse_in_scrollbar, if (global.mouse_capture == .selecting) 1.0 else global.selection_fade, cursor_alpha);
             return 0;
         },
@@ -1034,8 +1034,9 @@ fn WndProc(
                 }
                 win32.invalidateHwnd(hwnd);
             } else if (wparam == TIMER_CURSOR) {
-                global.cursor_phase += 0.15;
-                if (global.cursor_phase > 6.283185) global.cursor_phase -= 6.283185;
+                global.cursor_phase += 16.0;
+                const total_ms = @as(f32, @floatFromInt(global.config.cursor_fade_in + global.config.cursor_fade_out));
+                if (total_ms > 0 and global.cursor_phase >= total_ms) global.cursor_phase -= total_ms;
                 win32.invalidateHwnd(hwnd);
             }
             return 0;

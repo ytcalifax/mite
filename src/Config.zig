@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub const Config = struct {
     font_size: f32 = 14.0,
@@ -6,11 +7,14 @@ pub const Config = struct {
     foreground: []const u8 = "0xc8c4d0",
     background: []const u8 = "0x140f1a",
     cursor: []const u8 = "0xffffff",
+    cursor_blink: bool = true,
+    cursor_fade_in: u32 = 400,
+    cursor_fade_out: u32 = 400,
     opacity: f32 = 0.94,
     shell: []const u8 = "C:\\Windows\\System32\\cmd.exe",
 
     pub fn load(allocator: std.mem.Allocator) !Config {
-        const home = std.process.getEnvVarOwned(allocator, "USERPROFILE") catch |err| {
+        const home = std.process.getEnvVarOwned(allocator, if (builtin.os.tag == .windows) "USERPROFILE" else "HOME") catch |err| {
             if (err == error.EnvironmentVariableNotFound) {
                 return error.HomeNotFound;
             }
@@ -37,6 +41,9 @@ pub const Config = struct {
                     \\  "foreground": "0xc8c4d0",
                     \\  "background": "0x140f1a",
                     \\  "cursor": "0xffffff",
+                    \\  "cursor_blink": true,
+                    \\  "cursor_fade_in": 400,
+                    \\  "cursor_fade_out": 400,
                     \\  "opacity": 0.94,
                     \\  "shell": "C:\\\\Windows\\\\System32\\\\cmd.exe"
                     \\}
@@ -81,5 +88,23 @@ pub const Config = struct {
         }
         if (hex.len <= start) return 0;
         return std.fmt.parseInt(u24, hex[start..], 16) catch 0;
+    }
+
+    pub fn calculateCursorAlpha(phase_ms: f32, config: Config) f32 {
+        if (!config.cursor_blink) return 1.0;
+
+        const fade_in = @as(f32, @floatFromInt(config.cursor_fade_in));
+        const fade_out = @as(f32, @floatFromInt(config.cursor_fade_out));
+        const total_ms = fade_in + fade_out;
+        if (total_ms <= 0) return 1.0;
+
+        const p = @mod(phase_ms, total_ms);
+        if (p < fade_in) {
+            const x = p / fade_in;
+            return 0.5 * (1.0 - std.math.cos(std.math.pi * x));
+        } else {
+            const x = (p - fade_in) / fade_out;
+            return 0.5 * (1.0 + std.math.cos(std.math.pi * x));
+        }
     }
 };

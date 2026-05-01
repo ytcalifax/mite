@@ -16,6 +16,14 @@ pub fn main() !void {
 
     try miteicon.installDesktop(mite_config);
 
+    var config_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer config_arena.deinit();
+    const config = Config.load(config_arena.allocator()) catch |err| blk: {
+        std.log.err("failed to load config: {}", .{err});
+        const names = config_arena.allocator().alloc([]const u8, 0) catch @panic("OOM");
+        break :blk Config{ .font_names = names };
+    };
+
     var io_pinned: IoPinned = undefined;
     var backend = blk: {
         if (builtin.os.tag == .linux) {
@@ -107,10 +115,11 @@ pub fn main() !void {
 
             const dt_ms: f32 = @as(f32, @as(f64, dt_ns) / @as(f64, std.time.ns_per_ms));
 
-            cursor_phase += 2.5 * 3.14159265 * (dt_ms / 1000.0);
-            if (cursor_phase > 2.0 * 3.14159265) cursor_phase -= 2.0 * 3.14159265;
+            cursor_phase += dt_ms;
+            const total_ms = @as(f32, @floatFromInt(config.cursor_fade_in + config.cursor_fade_out));
+            if (total_ms > 0 and cursor_phase >= total_ms) cursor_phase -= total_ms;
 
-            const cursor_alpha: f32 = 0.5 * (1.0 + std.math.sin(cursor_phase));
+            const cursor_alpha = Config.calculateCursorAlpha(cursor_phase, config);
 
             try backend.render(&term, cursor_alpha);
             damaged = false;
@@ -318,3 +327,4 @@ const wayland_backend = switch (builtin.os.tag) {
     else => @compileError("wayland only supported on linux"),
 };
 const Cmdline = @import("Cmdline.zig");
+const Config = @import("Config.zig").Config;

@@ -631,65 +631,70 @@ fn WndProc(
             return 0;
         },
         win32.WM_KEYDOWN => {
-            const state = stateFromHwnd(hwnd);
+                    const state = stateFromHwnd(hwnd);
 
-            const pty = state.child_process.pty orelse {
-                return 0;
-            };
-            if ((wparam == @intFromEnum(win32.VK_V) and win32.GetKeyState(@intFromEnum(win32.VK_CONTROL)) < 0 and win32.GetKeyState(@intFromEnum(win32.VK_SHIFT)) < 0) or
-                (wparam == @intFromEnum(win32.VK_INSERT) and win32.GetKeyState(@intFromEnum(win32.VK_SHIFT)) < 0))
-            {
-                pasteClipboard(hwnd, state);
-                return 0;
-            }
+                    const pty = state.child_process.pty orelse {
+                        return 0;
+                    };
+                    if ((wparam == @intFromEnum(win32.VK_V) and win32.GetKeyState(@intFromEnum(win32.VK_CONTROL)) < 0 and win32.GetKeyState(@intFromEnum(win32.VK_SHIFT)) < 0) or
+                        (wparam == @intFromEnum(win32.VK_INSERT) and win32.GetKeyState(@intFromEnum(win32.VK_SHIFT)) < 0))
+                    {
+                        pasteClipboard(hwnd, state);
+                        return 0;
+                    }
 
-            const screen = state.term.screens.active;
-            if (screen.selection != null) {
-                screen.clearSelection();
-                global.selection_fade = 0;
-                _ = win32.KillTimer(hwnd, TIMER_SELECTION_FADE);
-                win32.invalidateHwnd(hwnd);
-            }
+                    const screen = state.term.screens.active;
+                    if (screen.selection != null) {
+                        screen.clearSelection();
+                        global.selection_fade = 0;
+                        _ = win32.KillTimer(hwnd, TIMER_SELECTION_FADE);
+                        win32.invalidateHwnd(hwnd);
+                    }
 
-            if (!screen.viewportIsBottom()) {
-                screen.scroll(.active);
-                win32.invalidateHwnd(hwnd);
-            }
+                    if (!screen.viewportIsBottom()) {
+                        screen.scroll(.active);
+                        win32.invalidateHwnd(hwnd);
+                    }
 
-            const seq: ?[]const u8 = switch (wparam) {
-                @intFromEnum(win32.VK_BACK) => "\x7f",
-                @intFromEnum(win32.VK_UP) => "\x1b[A",
-                @intFromEnum(win32.VK_DOWN) => "\x1b[B",
-                @intFromEnum(win32.VK_RIGHT) => "\x1b[C",
-                @intFromEnum(win32.VK_LEFT) => "\x1b[D",
-                @intFromEnum(win32.VK_HOME) => "\x1b[H",
-                @intFromEnum(win32.VK_END) => "\x1b[F",
-                @intFromEnum(win32.VK_INSERT) => "\x1b[2~",
-                @intFromEnum(win32.VK_DELETE) => "\x1b[3~",
-                @intFromEnum(win32.VK_PRIOR) => "\x1b[5~",
-                @intFromEnum(win32.VK_NEXT) => "\x1b[6~",
-                @intFromEnum(win32.VK_F1) => "\x1bOP",
-                @intFromEnum(win32.VK_F2) => "\x1bOQ",
-                @intFromEnum(win32.VK_F3) => "\x1bOR",
-                @intFromEnum(win32.VK_F4) => "\x1bOS",
-                @intFromEnum(win32.VK_F5) => "\x1b[15~",
-                @intFromEnum(win32.VK_F6) => "\x1b[17~",
-                @intFromEnum(win32.VK_F7) => "\x1b[18~",
-                @intFromEnum(win32.VK_F8) => "\x1b[19~",
-                @intFromEnum(win32.VK_F9) => "\x1b[20~",
-                @intFromEnum(win32.VK_F10) => "\x1b[21~",
-                @intFromEnum(win32.VK_F11) => {
-                    toggleFullscreen(hwnd);
-                    return 0;
+                    const app_cursor = state.term.modes.values.cursor_keys;
+
+                    const seq: ?[]const u8 = switch (wparam) {
+                        @intFromEnum(win32.VK_BACK) => "\x7f",
+                        @intFromEnum(win32.VK_UP) => if (app_cursor) "\x1bOA" else "\x1b[A",
+                        @intFromEnum(win32.VK_DOWN) => if (app_cursor) "\x1bOB" else "\x1b[B",
+                        @intFromEnum(win32.VK_RIGHT) => if (app_cursor) "\x1bOC" else "\x1b[C",
+                        @intFromEnum(win32.VK_LEFT) => if (app_cursor) "\x1bOD" else "\x1b[D",
+                        @intFromEnum(win32.VK_HOME) => if (app_cursor) "\x1bOH" else "\x1b[H",
+                        @intFromEnum(win32.VK_END) => if (app_cursor) "\x1bOF" else "\x1b[F",
+                        @intFromEnum(win32.VK_INSERT) => "\x1b[2~",
+                        @intFromEnum(win32.VK_DELETE) => "\x1b[3~",
+                        @intFromEnum(win32.VK_PRIOR) => "\x1b[5~",
+                        @intFromEnum(win32.VK_NEXT) => "\x1b[6~",
+                        @intFromEnum(win32.VK_F1) => "\x1bOP",
+                        @intFromEnum(win32.VK_F2) => "\x1bOQ",
+                        @intFromEnum(win32.VK_F3) => "\x1bOR",
+                        @intFromEnum(win32.VK_F4) => "\x1bOS",
+                        @intFromEnum(win32.VK_F5) => "\x1b[15~",
+                        @intFromEnum(win32.VK_F6) => "\x1b[17~",
+                        @intFromEnum(win32.VK_F7) => "\x1b[18~",
+                        @intFromEnum(win32.VK_F8) => "\x1b[19~",
+                        @intFromEnum(win32.VK_F9) => "\x1b[20~",
+                        @intFromEnum(win32.VK_F10) => "\x1b[21~",
+                        @intFromEnum(win32.VK_F11) => {
+                            toggleFullscreen(hwnd);
+                            return 0;
+                        },
+                        @intFromEnum(win32.VK_F12) => "\x1b[24~",
+                        else => null,
+                    };
+
+                    if (seq) |s| {
+                        pty.writeFlushAll(s) catch |e| log.err("write to pty failed: {any}", .{e});
+                        return 0;
+                    }
+
+                    return win32.DefWindowProcW(hwnd, msg, wparam, lparam);
                 },
-                @intFromEnum(win32.VK_F12) => "\x1b[24~",
-                else => null,
-            };
-            if (seq) |s| {
-                pty.writeFlushAll(s) catch |e| log.err("write to pty failed: {any}", .{e});
-            }
-            return 0;
-        },
         win32.WM_CHAR => {
             const state = stateFromHwnd(hwnd);
             const pty = state.child_process.pty orelse return 0;

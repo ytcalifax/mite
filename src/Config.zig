@@ -34,7 +34,7 @@ pub const Config = struct {
 
         const file = std.fs.openFileAbsolute(config_path, .{}) catch |err| {
             if (err == error.FileNotFound) {
-                const default_config = 
+                const default_config =
                     \\{
                     \\  "font_size": 14.0,
                     \\  "font_names": ["Consolas 7NF", "Consolas"],
@@ -63,31 +63,39 @@ pub const Config = struct {
         var parsed = try std.json.parseFromSlice(Config, allocator, content, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
 
-        // Copy everything out of the parsed arena into our allocator
         var result = parsed.value;
         result.foreground = try allocator.dupe(u8, parsed.value.foreground);
+        errdefer allocator.free(result.foreground);
         result.background = try allocator.dupe(u8, parsed.value.background);
+        errdefer allocator.free(result.background);
         result.cursor = try allocator.dupe(u8, parsed.value.cursor);
+        errdefer allocator.free(result.cursor);
         result.shell = try allocator.dupe(u8, parsed.value.shell);
-        
+        errdefer allocator.free(result.shell);
+
         const names = try allocator.alloc([]const u8, parsed.value.font_names.len);
-        for (parsed.value.font_names, 0..) |name, i| {
-            names[i] = try allocator.dupe(u8, name);
+        errdefer allocator.free(names);
+        var i: usize = 0;
+        errdefer {
+            for (0..i) |j| allocator.free(names[j]);
+        }
+        while (i < parsed.value.font_names.len) : (i += 1) {
+            names[i] = try allocator.dupe(u8, parsed.value.font_names[i]);
         }
         result.font_names = names;
 
         return result;
     }
 
-    pub fn parseColor(hex: []const u8) u24 {
+    pub fn parseColor(hex: []const u8) !u24 {
         var start: usize = 0;
         if (std.mem.startsWith(u8, hex, "0x")) {
             start = 2;
         } else if (std.mem.startsWith(u8, hex, "#")) {
             start = 1;
         }
-        if (hex.len <= start) return 0;
-        return std.fmt.parseInt(u24, hex[start..], 16) catch 0;
+        if (hex.len <= start) return error.InvalidColor;
+        return std.fmt.parseInt(u24, hex[start..], 16);
     }
 
     pub fn calculateCursorAlpha(phase_ms: f32, config: Config) f32 {

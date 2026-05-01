@@ -86,7 +86,7 @@ pub fn scrollbarWidth(dpi: u32) u16 {
     return @intFromFloat(@round(@as(f32, @floatFromInt(scrollbar_logical_width)) * @as(f32, @floatFromInt(dpi)) / 96.0));
 }
 
-fn measureCellSize(dwrite_factory: *win32.IDWriteFactory, text_format: *win32.IDWriteTextFormat) win32.SIZE {
+fn measureCellSize(dwrite_factory: *win32.IDWriteFactory, text_format: *win32.IDWriteTextFormat) !win32.SIZE {
     var text_layout: *win32.IDWriteTextLayout = undefined;
     {
         const hr = dwrite_factory.CreateTextLayout(
@@ -97,14 +97,14 @@ fn measureCellSize(dwrite_factory: *win32.IDWriteFactory, text_format: *win32.ID
             std.math.floatMax(f32),
             &text_layout,
         );
-        if (hr < 0) fatalHr("CreateTextLayout", hr);
+        if (hr < 0) return error.CreateTextLayoutFailed;
     }
     defer _ = text_layout.IUnknown.Release();
 
     var metrics: win32.DWRITE_TEXT_METRICS = undefined;
     {
         const hr = text_layout.GetMetrics(&metrics);
-        if (hr < 0) fatalHr("GetMetrics", hr);
+        if (hr < 0) return error.GetMetricsFailed;
     }
     return .{
         .cx = @intFromFloat(@floor(metrics.width)),
@@ -112,7 +112,7 @@ fn measureCellSize(dwrite_factory: *win32.IDWriteFactory, text_format: *win32.ID
     };
 }
 
-fn createTextFormat(dwrite_factory: *win32.IDWriteFactory, dpi: u32, config: *const Config) *win32.IDWriteTextFormat {
+fn createTextFormat(dwrite_factory: *win32.IDWriteFactory, dpi: u32, config: *const Config) !*win32.IDWriteTextFormat {
     var text_format: *win32.IDWriteTextFormat = undefined;
     for (config.font_names) |name| {
         const max_u16 = 256;
@@ -143,15 +143,21 @@ fn createTextFormat(dwrite_factory: *win32.IDWriteFactory, dpi: u32, config: *co
         win32.L(""),
         &text_format,
     );
-    if (hr < 0) fatalHr("CreateTextFormat", hr);
+    if (hr < 0) return error.CreateTextFormatFailed;
     return text_format;
 }
 
 pub fn cellSizeForDpi(self: *D3d11Renderer, dpi: u32) win32.SIZE {
     if (dpi == self.dpi) return self.cell_size;
-    const text_format = createTextFormat(self.dwrite_factory, dpi, self.config);
+    const text_format = createTextFormat(self.dwrite_factory, dpi, self.config) catch |err| {
+        log.err("failed to create text format for dpi {any}: {any}", .{ dpi, err });
+        return self.cell_size;
+    };
     defer _ = text_format.IUnknown.Release();
-    return measureCellSize(self.dwrite_factory, text_format);
+    return measureCellSize(self.dwrite_factory, text_format) catch |err| {
+        log.err("failed to measure cell size for dpi {any}: {any}", .{ dpi, err });
+        return self.cell_size;
+    };
 }
 
 const CellXY = struct {
@@ -162,7 +168,7 @@ const CellXY = struct {
     }
 };
 
-pub fn init(dpi: u32, config: *const Config) D3d11Renderer {
+pub fn init(dpi: u32, config: *const Config) !D3d11Renderer {
     // Create D3D11 device
     const levels = [_]win32.D3D_FEATURE_LEVEL{.@"11_0"};
     var device: *win32.ID3D11Device = undefined;
@@ -180,14 +186,14 @@ pub fn init(dpi: u32, config: *const Config) D3d11Renderer {
             null,
             &context,
         );
-        if (hr < 0) fatalHr("D3D11CreateDevice", hr);
+        if (hr < 0) return error.D3D11DeviceCreationFailed;
     }
     log.info("D3D11 device created", .{});
 
     // Compile shaders
     const shader_source = @embedFile("terminal.hlsl");
 
-    const vs_blob = compileShaderBlob(shader_source, "VertexMain", "vs_5_0");
+    const vs_blob = try compileShaderBlob(shader_source, "VertexMain", "vs_5_0");
     defer _ = vs_blob.IUnknown.Release();
     var vertex_shader: *win32.ID3D11VertexShader = undefined;
     {
@@ -197,10 +203,10 @@ pub fn init(dpi: u32, config: *const Config) D3d11Renderer {
             null,
             &vertex_shader,
         );
-        if (hr < 0) fatalHr("CreateVertexShader", hr);
+        if (hr < 0) return error.VertexShaderCreationFailed;
     }
 
-    const ps_blob = compileShaderBlob(shader_source, "PixelMain", "ps_5_0");
+    const ps_blob = try compileShaderBlob(shader_source, "PixelMain", "ps_5_0");
     defer _ = ps_blob.IUnknown.Release();
     var pixel_shader: *win32.ID3D11PixelShader = undefined;
     {
@@ -210,7 +216,7 @@ pub fn init(dpi: u32, config: *const Config) D3d11Renderer {
             null,
             &pixel_shader,
         );
-        if (hr < 0) fatalHr("CreatePixelShader", hr);
+        if (hr < 0) return error.PixelShaderCreationFailed;
     }
 
     // Constant buffer
@@ -225,7 +231,7 @@ pub fn init(dpi: u32, config: *const Config) D3d11Renderer {
             .StructureByteStride = 0,
         };
         const hr = device.CreateBuffer(&desc, null, &const_buf);
-        if (hr < 0) fatalHr("CreateConstBuffer", hr);
+        if (hr < 0) return error.ConstantBufferCreationFailed;
     }
 
     // DirectWrite
@@ -236,12 +242,12 @@ pub fn init(dpi: u32, config: *const Config) D3d11Renderer {
             win32.IID_IDWriteFactory,
             @ptrCast(&dwrite_factory),
         );
-        if (hr < 0) fatalHr("DWriteCreateFactory", hr);
+        if (hr < 0) return error.DWriteFactoryCreationFailed;
     }
 
-    const text_format = createTextFormat(dwrite_factory, dpi, config);
+    const text_format = try createTextFormat(dwrite_factory, dpi, config);
 
-    const cell_size = measureCellSize(dwrite_factory, text_format);
+    const cell_size = try measureCellSize(dwrite_factory, text_format);
     const cell_size_xy: CellXY = .{
         .x = @intCast(cell_size.cx),
         .y = @intCast(cell_size.cy),
@@ -256,7 +262,7 @@ pub fn init(dpi: u32, config: *const Config) D3d11Renderer {
             null,
             @ptrCast(&d2d_factory),
         );
-        if (hr < 0) fatalHr("D2D1CreateFactory", hr);
+        if (hr < 0) return error.D2D1FactoryCreationFailed;
     }
 
     return .{
@@ -281,10 +287,16 @@ pub fn init(dpi: u32, config: *const Config) D3d11Renderer {
 pub fn updateDpi(self: *D3d11Renderer, dpi: u32) void {
     if (dpi == self.dpi) return;
     _ = self.text_format.IUnknown.Release();
-    self.text_format = createTextFormat(self.dwrite_factory, dpi, self.config);
+    self.text_format = createTextFormat(self.dwrite_factory, dpi, self.config) catch |err| {
+        log.err("failed to create text format for dpi {any}: {any}", .{ dpi, err });
+        return;
+    };
     self.dpi = dpi;
 
-    const new_cs = measureCellSize(self.dwrite_factory, self.text_format);
+    const new_cs = measureCellSize(self.dwrite_factory, self.text_format) catch |err| {
+        log.err("failed to measure cell size for dpi {any}: {any}", .{ dpi, err });
+        return;
+    };
     self.cell_size = new_cs;
     self.cell_size_xy = .{
         .x = @intCast(new_cs.cx),
@@ -342,7 +354,10 @@ pub fn render(
 
     // Lazy swap chain init
     if (self.swap_chain == null) {
-        self.swap_chain = self.initSwapChain(hwnd, client_w, client_h);
+        self.swap_chain = self.initSwapChain(hwnd, client_w, client_h) catch |err| {
+            log.err("failed to initialize swap chain: {any}", .{err});
+            return;
+        };
     }
     const swap_chain = self.swap_chain.?;
     if (client_w == 0 or client_h == 0) return;
@@ -352,7 +367,10 @@ pub fn render(
         var sc_w: u32 = undefined;
         var sc_h: u32 = undefined;
         const hr = swap_chain.GetSourceSize(&sc_w, &sc_h);
-        if (hr < 0) fatalHr("GetSourceSize", hr);
+        if (hr < 0) {
+            log.err("GetSourceSize failed, hr=0x{x}", .{@as(u32, @bitCast(hr))});
+            return;
+        }
         if (sc_w != client_w or sc_h != client_h) {
             self.context.ClearState();
             if (self.target_view) |tv| {
@@ -367,19 +385,21 @@ pub fn render(
                 .UNKNOWN,
                 @intFromEnum(win32.DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT),
             );
-            if (rhr < 0) fatalHr("ResizeBuffers", rhr);
+            if (rhr < 0) {
+                log.err("ResizeBuffers failed, hr=0x{x}", .{@as(u32, @bitCast(rhr))});
+                return;
+            }
         }
     }
 
     const cs = self.cell_size_xy;
-    const sb_px: u32 = scrollbarWidth(win32.dpiFromHwnd(hwnd));
-    const grid_w: u32 = client_w -| sb_px;
+    const grid_w: u32 = client_w -| @as(u32, @intCast(scrollbarWidth(win32.dpiFromHwnd(hwnd))));
     const shader_col: u32 = @divTrunc(grid_w + cs.x - 1, cs.x);
     const shader_row: u32 = @divTrunc(client_h + cs.y - 1, cs.y);
 
-    const default_fg = Config.parseColor(self.config.foreground);
-    const default_bg = Config.parseColor(self.config.background);
-    const cursor_color = Config.parseColor(self.config.cursor);
+    const default_fg = Config.parseColor(self.config.foreground) catch 0xc8c4d0;
+    const default_bg = Config.parseColor(self.config.background) catch 0x140f1a;
+    const cursor_color = Config.parseColor(self.config.cursor) catch 0xffffff;
 
     // Update constant buffer
     {
@@ -391,17 +411,20 @@ pub fn render(
             0,
             &mapped,
         );
-        if (hr < 0) fatalHr("MapConstBuffer", hr);
+        if (hr < 0) {
+            log.err("MapConstBuffer failed, hr=0x{x}", .{@as(u32, @bitCast(hr))});
+            return;
+        }
         defer self.context.Unmap(&self.const_buf.ID3D11Resource, 0);
-        const config: *shader.GridConfig = @ptrCast(@alignCast(mapped.pData));
-        config.cell_size[0] = cs.x;
-        config.cell_size[1] = cs.y;
-        config.col_count = shader_col;
-        config.row_count = shader_row;
-        config.background = Rgba8.fromU24(default_bg, 255);
-        config.foreground = Rgba8.fromU24(default_fg, 255);
-        config.cursor_color = Rgba8.fromU24(cursor_color, 255);
-        config.opacity = self.config.opacity;
+        const grid_config: *shader.GridConfig = @ptrCast(@alignCast(mapped.pData));
+        grid_config.cell_size[0] = cs.x;
+        grid_config.cell_size[1] = cs.y;
+        grid_config.col_count = shader_col;
+        grid_config.row_count = shader_row;
+        grid_config.background = Rgba8.fromU24(default_bg, 255);
+        grid_config.foreground = Rgba8.fromU24(default_fg, 255);
+        grid_config.cursor_color = Rgba8.fromU24(cursor_color, 255);
+        grid_config.opacity = self.config.opacity;
 
         // Compute scrollbar geometry in pixels (within the reserved scrollbar area)
         // Only show the thumb when scrolled up or mouse is hovering over the scrollbar
@@ -409,22 +432,22 @@ pub fn render(
         const show_scrollbar = sb.total > sb.len and (!term.screens.active.viewportIsBottom() or mouse_in_scrollbar);
         if (show_scrollbar) {
             const sb_x: f32 = @floatFromInt(grid_w);
-            const sb_w: f32 = @floatFromInt(sb_px);
+            const sb_w: f32 = @floatFromInt(scrollbarWidth(win32.dpiFromHwnd(hwnd)));
             const win_h: f32 = @floatFromInt(client_h);
             const min_track_height: f32 = 20.0;
             const track_height = @max(min_track_height, @as(f32, @floatFromInt(sb.len)) / @as(f32, @floatFromInt(sb.total)) * win_h);
             const max_offset = sb.total - sb.len;
             const track_y = @as(f32, @floatFromInt(sb.offset)) / @as(f32, @floatFromInt(max_offset)) * (win_h - track_height);
 
-            config.scrollbar_x = sb_x;
-            config.scrollbar_width = sb_w;
-            config.scrollbar_y = track_y;
-            config.scrollbar_height = track_height;
+            grid_config.scrollbar_x = sb_x;
+            grid_config.scrollbar_width = sb_w;
+            grid_config.scrollbar_y = track_y;
+            grid_config.scrollbar_height = track_height;
         } else {
-            config.scrollbar_x = 0;
-            config.scrollbar_width = 0;
-            config.scrollbar_y = 0;
-            config.scrollbar_height = 0;
+            grid_config.scrollbar_x = 0;
+            grid_config.scrollbar_width = 0;
+            grid_config.scrollbar_y = 0;
+            grid_config.scrollbar_height = 0;
         }
     }
 
@@ -438,7 +461,10 @@ pub fn render(
         .a = 0,
     };
 
-    self.shader_cells.updateCount(self.device, cell_count);
+    self.shader_cells.updateCount(self.device, cell_count) catch |err| {
+        log.err("failed to update shader cells: {any}", .{err});
+        return;
+    };
     if (cell_count > 0) {
         var mapped: win32.D3D11_MAPPED_SUBRESOURCE = undefined;
         const hr = self.context.Map(
@@ -448,7 +474,10 @@ pub fn render(
             0,
             &mapped,
         );
-        if (hr < 0) fatalHr("MapCellBuffer", hr);
+        if (hr < 0) {
+            log.err("MapCellBuffer failed, hr=0x{x}", .{@as(u32, @bitCast(hr))});
+            return;
+        }
         defer self.context.Unmap(&self.shader_cells.cell_buf.ID3D11Resource, 0);
 
         const cells_out: [*]shader.Cell = @ptrCast(@alignCast(mapped.pData));
@@ -583,7 +612,7 @@ pub fn render(
             const overlay_fg = Rgba8.fromU24(0xffffff, 255);
 
             var text_buf: [20]u8 = undefined;
-            const text = std.fmt.bufPrint(&text_buf, "{}x{}", .{ term.cols, term.rows }) catch unreachable;
+            const text = std.fmt.bufPrint(&text_buf, "{any}x{any}", .{ term.cols, term.rows }) catch unreachable;
 
             const text_len: u32 = @intCast(text.len);
             const pad: u32 = 2;
@@ -625,7 +654,10 @@ pub fn render(
 
     // Create render target view if needed
     if (self.target_view == null) {
-        self.target_view = self.createRenderTargetView(swap_chain, client_w, client_h);
+        self.target_view = self.createRenderTargetView(swap_chain, client_w, client_h) catch |err| {
+            log.err("failed to create render target view: {any}", .{err});
+            return;
+        };
     }
 
     // Draw
@@ -650,7 +682,9 @@ pub fn render(
 
     {
         const hr = swap_chain.IDXGISwapChain.Present(0, 0);
-        if (hr < 0) fatalHr("Present", hr);
+        if (hr < 0) {
+            log.err("Present failed, hr=0x{x}", .{@as(u32, @bitCast(hr))});
+        }
     }
 }
 
@@ -665,7 +699,10 @@ fn generateGlyph(self: *D3d11Renderer, key: GlyphIndexCache.Key) u32 {
         .x = tex_cell_count.x * cs.x,
         .y = tex_cell_count.y * cs.y,
     };
-    const tex_retained = self.glyph_texture.updateSize(self.device, tex_pixel);
+    const tex_retained = self.glyph_texture.updateSize(self.device, tex_pixel) catch |err| {
+        log.err("failed to update glyph texture size: {any}", .{err});
+        return 0;
+    };
 
     const cache_valid = if (self.glyph_cache_cell_size) |s| s.eql(cs) else false;
     self.glyph_cache_cell_size = cs;
@@ -683,18 +720,27 @@ fn generateGlyph(self: *D3d11Renderer, key: GlyphIndexCache.Key) u32 {
         self.glyph_cache = GlyphIndexCache.init(
             self.glyph_cache_arena.allocator(),
             tex_total,
-        ) catch oom(error.OutOfMemory);
+        ) catch |err| {
+            log.err("failed to initialize glyph cache: {any}", .{err});
+            return 0;
+        };
         break :blk &(self.glyph_cache.?);
     };
 
-    switch (cache.reserve(self.glyph_cache_arena.allocator(), key) catch oom(error.OutOfMemory)) {
+    switch (cache.reserve(self.glyph_cache_arena.allocator(), key) catch |err| {
+        log.err("failed to reserve glyph in cache: {any}", .{err});
+        return 0;
+    }) {
         .newly_reserved => |reserved| {
             const pos = cellPosFromIndex(reserved.index, tex_cell_count.x);
             const coord: CellXY = .{ .x = cs.x * pos.x, .y = cs.y * pos.y };
 
             // Render glyph to staging texture (2 cells wide to accommodate wide chars).
             const staging_size: CellXY = .{ .x = cs.x * 2, .y = cs.y };
-            const staging = self.staging_texture.getOrCreate(self.device, self.d2d_factory, staging_size);
+            const staging = self.staging_texture.getOrCreate(self.device, self.d2d_factory, staging_size) catch |err| {
+                log.err("failed to get staging texture: {any}", .{err});
+                return 0;
+            };
 
             const codepoint = key.codepoint;
             var utf8_buf: [4]u8 = undefined;
@@ -721,14 +767,20 @@ fn generateGlyph(self: *D3d11Renderer, key: GlyphIndexCache.Key) u32 {
                         std.math.floatMax(f32),
                         &text_layout,
                     );
-                    if (lhr < 0) fatalHr("CreateTextLayout", lhr);
+                    if (lhr < 0) {
+                        log.err("CreateTextLayout failed, hr=0x{x}", .{@as(u32, @bitCast(lhr))});
+                        return 0;
+                    }
                 }
                 defer _ = text_layout.IUnknown.Release();
 
                 var metrics: win32.DWRITE_TEXT_METRICS = undefined;
                 {
                     const mhr = text_layout.GetMetrics(&metrics);
-                    if (mhr < 0) fatalHr("GetMetrics", mhr);
+                    if (mhr < 0) {
+                        log.err("GetMetrics failed, hr=0x{x}", .{@as(u32, @bitCast(mhr))});
+                        return 0;
+                    }
                 }
                 if (metrics.width > 0) {
                     scale_x = target_width / metrics.width;
@@ -795,19 +847,19 @@ fn generateGlyph(self: *D3d11Renderer, key: GlyphIndexCache.Key) u32 {
 
 // --- Swap chain ---
 
-fn initSwapChain(self: *D3d11Renderer, hwnd: win32.HWND, width: u32, height: u32) *win32.IDXGISwapChain2 {
-    const dxgi_device = queryInterface(self.device, win32.IDXGIDevice);
+fn initSwapChain(self: *D3d11Renderer, hwnd: win32.HWND, width: u32, height: u32) !*win32.IDXGISwapChain2 {
+    const dxgi_device = try queryInterface(self.device, win32.IDXGIDevice);
     defer _ = dxgi_device.IUnknown.Release();
     var adapter: *win32.IDXGIAdapter = undefined;
     {
         const hr = dxgi_device.GetAdapter(&adapter);
-        if (hr < 0) fatalHr("GetAdapter", hr);
+        if (hr < 0) return error.GetAdapterFailed;
     }
     defer _ = adapter.IUnknown.Release();
     var factory: *win32.IDXGIFactory2 = undefined;
     {
         const hr = adapter.IDXGIObject.GetParent(win32.IID_IDXGIFactory2, @ptrCast(&factory));
-        if (hr < 0) fatalHr("GetDxgiFactory", hr);
+        if (hr < 0) return error.GetDxgiFactoryFailed;
     }
     defer _ = factory.IUnknown.Release();
 
@@ -833,40 +885,40 @@ fn initSwapChain(self: *D3d11Renderer, hwnd: win32.HWND, width: u32, height: u32
             null,
             &swap_chain1,
         );
-        if (hr < 0) fatalHr("CreateSwapChainForComposition", hr);
+        if (hr < 0) return error.CreateSwapChainFailed;
     }
     defer _ = swap_chain1.IUnknown.Release();
 
     // DirectComposition: bind swap chain to window
     {
         const hr = win32.DCompositionCreateDevice(dxgi_device, win32.IID_IDCompositionDevice, @ptrCast(&self.dcomp_device));
-        if (hr < 0) fatalHr("DCompositionCreateDevice", hr);
+        if (hr < 0) return error.DCompositionCreateDeviceFailed;
     }
     {
         const hr = self.dcomp_device.CreateTargetForHwnd(hwnd, 1, @ptrCast(&self.dcomp_target));
-        if (hr < 0) fatalHr("CreateTargetForHwnd", hr);
+        if (hr < 0) return error.CreateTargetForHwndFailed;
     }
     {
         const hr = self.dcomp_device.CreateVisual(@ptrCast(&self.dcomp_visual));
-        if (hr < 0) fatalHr("CreateVisual", hr);
+        if (hr < 0) return error.CreateVisualFailed;
     }
     {
         const hr = self.dcomp_visual.SetContent(&swap_chain1.IUnknown);
-        if (hr < 0) fatalHr("SetContent", hr);
+        if (hr < 0) return error.SetContentFailed;
     }
     {
         const hr = self.dcomp_target.SetRoot(self.dcomp_visual);
-        if (hr < 0) fatalHr("SetRoot", hr);
+        if (hr < 0) return error.SetRootFailed;
     }
     {
         const hr = self.dcomp_device.Commit();
-        if (hr < 0) fatalHr("DCompCommit", hr);
+        if (hr < 0) return error.DCompCommitFailed;
     }
 
     var swap_chain2: *win32.IDXGISwapChain2 = undefined;
     {
         const hr = swap_chain1.IUnknown.QueryInterface(win32.IID_IDXGISwapChain2, @ptrCast(&swap_chain2));
-        if (hr < 0) fatalHr("QuerySwapChain2", hr);
+        if (hr < 0) return error.QuerySwapChainFailed;
     }
     return swap_chain2;
 }
@@ -876,18 +928,18 @@ fn createRenderTargetView(
     swap_chain: *win32.IDXGISwapChain2,
     width: u32,
     height: u32,
-) *win32.ID3D11RenderTargetView {
+) !*win32.ID3D11RenderTargetView {
     var back_buffer: *win32.ID3D11Texture2D = undefined;
     {
         const hr = swap_chain.IDXGISwapChain.GetBuffer(0, win32.IID_ID3D11Texture2D, @ptrCast(&back_buffer));
-        if (hr < 0) fatalHr("GetBuffer", hr);
+        if (hr < 0) return error.GetBufferFailed;
     }
     defer _ = back_buffer.IUnknown.Release();
 
     var target_view: *win32.ID3D11RenderTargetView = undefined;
     {
         const hr = self.device.CreateRenderTargetView(&back_buffer.ID3D11Resource, null, &target_view);
-        if (hr < 0) fatalHr("CreateRenderTargetView", hr);
+        if (hr < 0) return error.CreateRenderTargetViewFailed;
     }
 
     var viewport = win32.D3D11_VIEWPORT{
@@ -911,7 +963,7 @@ const ShaderCells = struct {
     cell_buf: *win32.ID3D11Buffer = undefined,
     cell_view: *win32.ID3D11ShaderResourceView = undefined,
 
-    fn updateCount(self: *ShaderCells, device: *win32.ID3D11Device, count: u32) void {
+    fn updateCount(self: *ShaderCells, device: *win32.ID3D11Device, count: u32) !void {
         if (count == self.count) return;
         self.release();
         if (count > 0) {
@@ -924,7 +976,7 @@ const ShaderCells = struct {
                 .StructureByteStride = @sizeOf(shader.Cell),
             };
             const hr = device.CreateBuffer(&buf_desc, null, &self.cell_buf);
-            if (hr < 0) fatalHr("CreateCellBuffer", hr);
+            if (hr < 0) return error.CreateCellBufferFailed;
 
             const view_desc: win32.D3D11_SHADER_RESOURCE_VIEW_DESC = .{
                 .Format = .UNKNOWN,
@@ -941,7 +993,7 @@ const ShaderCells = struct {
                 &view_desc,
                 &self.cell_view,
             );
-            if (hr2 < 0) fatalHr("CreateCellView", hr2);
+            if (hr2 < 0) return error.CreateCellViewFailed;
         }
         self.count = count;
     }
@@ -960,7 +1012,7 @@ const GlyphTexture = struct {
     obj: ?*win32.ID3D11Texture2D = null,
     view: ?*win32.ID3D11ShaderResourceView = null,
 
-    fn updateSize(self: *GlyphTexture, device: *win32.ID3D11Device, size: CellXY) bool {
+    fn updateSize(self: *GlyphTexture, device: *win32.ID3D11Device, size: CellXY) !bool {
         if (self.size) |s| {
             if (s.eql(size)) return true;
             self.release();
@@ -980,12 +1032,12 @@ const GlyphTexture = struct {
         };
         var obj: *win32.ID3D11Texture2D = undefined;
         const hr = device.CreateTexture2D(&desc, null, &obj);
-        if (hr < 0) fatalHr("CreateGlyphTexture", hr);
+        if (hr < 0) return error.CreateGlyphTextureFailed;
         self.obj = obj;
 
         var view: *win32.ID3D11ShaderResourceView = undefined;
         const hr2 = device.CreateShaderResourceView(&obj.ID3D11Resource, null, &view);
-        if (hr2 < 0) fatalHr("CreateGlyphView", hr2);
+        if (hr2 < 0) return error.CreateGlyphViewFailed;
         self.view = view;
 
         self.size = size;
@@ -1015,7 +1067,7 @@ const StagingTexture = struct {
         device: *win32.ID3D11Device,
         d2d_factory: *win32.ID2D1Factory,
         size: CellXY,
-    ) *Cached {
+    ) !*Cached {
         if (self.cached) |*c| {
             if (c.size.eql(size)) return c;
             self.release();
@@ -1036,10 +1088,10 @@ const StagingTexture = struct {
                 .MiscFlags = .{},
             };
             const hr = device.CreateTexture2D(&desc, null, &texture);
-            if (hr < 0) fatalHr("CreateStagingTexture", hr);
+            if (hr < 0) return error.CreateStagingTextureFailed;
         }
 
-        const dxgi_surface = queryInterface(texture, win32.IDXGISurface);
+        const dxgi_surface = try queryInterface(texture, win32.IDXGISurface);
         defer _ = dxgi_surface.IUnknown.Release();
 
         var render_target: *win32.ID2D1RenderTarget = undefined;
@@ -1053,11 +1105,11 @@ const StagingTexture = struct {
                 .minLevel = .DEFAULT,
             };
             const hr = d2d_factory.CreateDxgiSurfaceRenderTarget(dxgi_surface, &props, &render_target);
-            if (hr < 0) fatalHr("CreateDxgiSurfaceRenderTarget", hr);
+            if (hr < 0) return error.CreateDxgiSurfaceRenderTargetFailed;
         }
 
         // Set pixel unit mode
-        const dc = queryInterface(render_target, win32.ID2D1DeviceContext);
+        const dc = try queryInterface(render_target, win32.ID2D1DeviceContext);
         defer _ = dc.IUnknown.Release();
         dc.SetUnitMode(win32.D2D1_UNIT_MODE_PIXELS);
 
@@ -1068,7 +1120,7 @@ const StagingTexture = struct {
                 null,
                 &white_brush,
             );
-            if (hr < 0) fatalHr("CreateBrush", hr);
+            if (hr < 0) return error.CreateBrushFailed;
         }
 
         self.cached = .{
@@ -1096,7 +1148,7 @@ fn compileShaderBlob(
     source: []const u8,
     entry: [*:0]const u8,
     target: [*:0]const u8,
-) *win32.ID3DBlob {
+) !*win32.ID3DBlob {
     var blob: *win32.ID3DBlob = undefined;
     var error_blob: ?*win32.ID3DBlob = null;
     const hr = win32.D3DCompile(
@@ -1120,7 +1172,7 @@ fn compileShaderBlob(
             log.err("shader error:\n{s}", .{str});
         }
     }
-    if (hr < 0) fatalHr("D3DCompile", hr);
+    if (hr < 0) return error.ShaderCompilationFailed;
     return blob;
 }
 
@@ -1138,7 +1190,7 @@ fn cellPosFromIndex(index: u32, column_count: u16) CellXY {
     };
 }
 
-fn queryInterface(obj: anytype, comptime Interface: type) *Interface {
+fn queryInterface(obj: anytype, comptime Interface: type) !*Interface {
     const iid_name = comptime blk: {
         const name = @typeName(Interface);
         const start = if (std.mem.lastIndexOfScalar(u8, name, '.')) |i| (i + 1) else 0;
@@ -1147,7 +1199,7 @@ fn queryInterface(obj: anytype, comptime Interface: type) *Interface {
     const iid = @field(win32, iid_name);
     var iface: *Interface = undefined;
     const hr = obj.IUnknown.QueryInterface(iid, @ptrCast(&iface));
-    if (hr < 0) fatalHr("QueryInterface", hr);
+    if (hr < 0) return error.QueryInterfaceFailed;
     return iface;
 }
 
@@ -1163,10 +1215,6 @@ fn rgbToU24(rgb: vt.color.RGB) u24 {
     return @as(u24, rgb.r) << 16 | @as(u24, rgb.g) << 8 | rgb.b;
 }
 
-fn fatalHr(what: []const u8, hresult: win32.HRESULT) noreturn {
-    std.debug.panic("{s} failed, hresult=0x{x}", .{ what, @as(u32, @bitCast(hresult)) });
-}
-
 fn lerpRgba8(a: Rgba8, b: Rgba8, t: f32) Rgba8 {
     return .{
         .r = lerpU8(a.r, b.r, t),
@@ -1180,8 +1228,4 @@ fn lerpU8(a: u8, b: u8, t: f32) u8 {
     const af: f32 = @floatFromInt(a);
     const bf: f32 = @floatFromInt(b);
     return @intFromFloat(af + (bf - af) * t);
-}
-
-fn oom(e: error{OutOfMemory}) noreturn {
-    @panic(@errorName(e));
 }

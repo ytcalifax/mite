@@ -38,16 +38,16 @@ const global = struct {
 fn updateWindowTitle(hwnd: win32.HWND, title: []const u8) void {
     const allocator = global.gpa.allocator();
 
-    // Initialize as empty
     var sanitized: std.ArrayList(u8) = .empty;
-    // Pass the allocator to deinit
     defer sanitized.deinit(allocator);
 
     var i: usize = 0;
     while (i < title.len) {
         const char = title[i];
-        // Pass the allocator to append
-        sanitized.append(allocator, char) catch break;
+        sanitized.append(allocator, char) catch {
+            log.warn("OOM while sanitizing window title", .{});
+            break;
+        };
         if (char == '\\' or char == '/') {
             if (i == 0 and i + 1 < title.len and title[i + 1] == char) {
                 sanitized.append(allocator, char) catch break;

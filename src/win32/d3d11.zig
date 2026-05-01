@@ -65,9 +65,9 @@ text_format: *win32.IDWriteTextFormat,
 dpi: u32,
 
 // DirectComposition
-dcomp_device: *win32.IDCompositionDevice = undefined,
-dcomp_target: *win32.IDCompositionTarget = undefined,
-dcomp_visual: *win32.IDCompositionVisual = undefined,
+dcomp_device: ?*win32.IDCompositionDevice = null,
+dcomp_target: ?*win32.IDCompositionTarget = null,
+dcomp_visual: ?*win32.IDCompositionVisual = null,
 
 // Per-window state (lazily initialized)
 swap_chain: ?*win32.IDXGISwapChain2 = null,
@@ -325,12 +325,17 @@ pub fn deinit(self: *D3d11Renderer) void {
     _ = self.glyph_cache_arena.reset(.free_all);
     self.glyph_texture.release();
     self.shader_cells.release();
-    // Clear all D3D state and flush before releasing the swap chain,
-    // otherwise DXGI keeps the window surface and GDI can't draw to it.
+
     self.context.ClearState();
     if (self.target_view) |tv| _ = tv.IUnknown.Release();
     self.target_view = null;
     self.context.Flush();
+
+    // Release DComp objects to prevent COM leaks
+    if (self.dcomp_visual) |dv| _ = dv.IUnknown.Release();
+    if (self.dcomp_target) |dt| _ = dt.IUnknown.Release();
+    if (self.dcomp_device) |dd| _ = dd.IUnknown.Release();
+
     if (self.swap_chain) |sc| _ = sc.IUnknown.Release();
     _ = self.d2d_factory.IUnknown.Release();
     _ = self.text_format.IUnknown.Release();
@@ -889,23 +894,23 @@ fn initSwapChain(self: *D3d11Renderer, hwnd: win32.HWND, width: u32, height: u32
         if (hr < 0) return error.DCompositionCreateDeviceFailed;
     }
     {
-        const hr = self.dcomp_device.CreateTargetForHwnd(hwnd, 1, @ptrCast(&self.dcomp_target));
+        const hr = self.dcomp_device.?.CreateTargetForHwnd(hwnd, 1, @ptrCast(&self.dcomp_target));
         if (hr < 0) return error.CreateTargetForHwndFailed;
     }
     {
-        const hr = self.dcomp_device.CreateVisual(@ptrCast(&self.dcomp_visual));
+        const hr = self.dcomp_device.?.CreateVisual(@ptrCast(&self.dcomp_visual));
         if (hr < 0) return error.CreateVisualFailed;
     }
     {
-        const hr = self.dcomp_visual.SetContent(&swap_chain1.IUnknown);
+        const hr = self.dcomp_visual.?.SetContent(&swap_chain1.IUnknown);
         if (hr < 0) return error.SetContentFailed;
     }
     {
-        const hr = self.dcomp_target.SetRoot(self.dcomp_visual);
+        const hr = self.dcomp_target.?.SetRoot(self.dcomp_visual.?);
         if (hr < 0) return error.SetRootFailed;
     }
     {
-        const hr = self.dcomp_device.Commit();
+        const hr = self.dcomp_device.?.Commit();
         if (hr < 0) return error.DCompCommitFailed;
     }
 

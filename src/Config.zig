@@ -1,12 +1,18 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+pub const CursorStyle = enum {
+    block,
+    pipe,
+};
+
 pub const Config = struct {
     font_size: f32 = 14.0,
     font_names: [][]const u8,
     foreground: []const u8 = "0xc8c4d0",
     background: []const u8 = "0x140f1a",
     cursor: []const u8 = "0xffffff",
+    cursor_style: CursorStyle = .block,
     cursor_blink: bool = true,
     cursor_fade_in: u32 = 400,
     cursor_fade_out: u32 = 400,
@@ -41,6 +47,7 @@ pub const Config = struct {
                     \\  "foreground": "0xc8c4d0",
                     \\  "background": "0x140f1a",
                     \\  "cursor": "0xffffff",
+                    \\  "cursor_style": "block",
                     \\  "cursor_blink": true,
                     \\  "cursor_fade_in": 400,
                     \\  "cursor_fade_out": 400,

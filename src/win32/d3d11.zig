@@ -22,6 +22,10 @@ const shader = struct {
         foreground: Rgba8,
         cursor_color: Rgba8,
         opacity: f32,
+        cursor_x: u32,
+        cursor_y: u32,
+        cursor_alpha: f32,
+        cursor_style: u32,
     };
     const Cell = extern struct {
         glyph_index: u32,
@@ -401,6 +405,8 @@ pub fn render(
     const default_bg = Config.parseColor(self.config.background) catch 0x140f1a;
     const cursor_color = Config.parseColor(self.config.cursor) catch 0xffffff;
 
+    const screen = term.screens.active;
+
     // Update constant buffer
     {
         var mapped: win32.D3D11_MAPPED_SUBRESOURCE = undefined;
@@ -425,11 +431,15 @@ pub fn render(
         grid_config.foreground = Rgba8.fromU24(default_fg, 255);
         grid_config.cursor_color = Rgba8.fromU24(cursor_color, 255);
         grid_config.opacity = self.config.opacity;
+        grid_config.cursor_x = if (screen.viewportIsBottom() and term.modes.get(.cursor_visible)) screen.cursor.x else 0xffff_ffff;
+        grid_config.cursor_y = screen.cursor.y;
+        grid_config.cursor_alpha = cursor_alpha;
+        grid_config.cursor_style = @intFromEnum(self.config.cursor_style);
 
         // Compute scrollbar geometry in pixels (within the reserved scrollbar area)
         // Only show the thumb when scrolled up or mouse is hovering over the scrollbar
-        const sb = term.screens.active.pages.scrollbar();
-        const show_scrollbar = sb.total > sb.len and (!term.screens.active.viewportIsBottom() or mouse_in_scrollbar);
+        const sb = screen.pages.scrollbar();
+        const show_scrollbar = sb.total > sb.len and (!screen.viewportIsBottom() or mouse_in_scrollbar);
         if (show_scrollbar) {
             const sb_x: f32 = @floatFromInt(grid_w);
             const sb_w: f32 = @floatFromInt(scrollbarWidth(win32.dpiFromHwnd(hwnd)));
@@ -482,7 +492,6 @@ pub fn render(
 
         const cells_out: [*]shader.Cell = @ptrCast(@alignCast(mapped.pData));
 
-        const screen = term.screens.active;
         const palette = &term.colors.palette.current;
         var row_it = screen.pages.rowIterator(.right_down, .{ .viewport = .{} }, null);
         var screen_row: u32 = 0;
@@ -589,21 +598,6 @@ pub fn render(
                 .background = bg_rgba,
                 .foreground = bg_rgba,
             });
-        }
-
-        // Draw cursor (smooth blend between original colors and inverted colors)
-        if (screen.viewportIsBottom() and term.modes.get(.cursor_visible)) {
-            const cx: u32 = screen.cursor.x;
-            const cy: u32 = screen.cursor.y;
-            if (cy < shader_row and cx < shader_col) {
-                const idx = cy * shader_col + cx;
-                const orig_bg = cells_out[idx].background;
-                const orig_fg = cells_out[idx].foreground;
-                const inv_bg = Rgba8.fromU24(cursor_color, 255);
-                const inv_fg = Rgba8.fromU24(default_bg, 255);
-                cells_out[idx].background = lerpRgba8(orig_bg, inv_bg, cursor_alpha);
-                cells_out[idx].foreground = lerpRgba8(orig_fg, inv_fg, cursor_alpha);
-            }
         }
 
         // Draw resize overlay (e.g. "80x25")

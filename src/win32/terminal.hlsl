@@ -7,6 +7,14 @@ cbuffer GridConfig : register(b0)
     float scrollbar_height;
     float scrollbar_x;
     float scrollbar_width;
+    uint background;
+    uint foreground;
+    uint cursor_color_packed;
+    float opacity;
+    uint cursor_x;
+    uint cursor_y;
+    float cursor_alpha;
+    uint cursor_style;
 }
 
 struct Cell
@@ -57,7 +65,7 @@ float4 PixelMain(float4 sv_pos : SV_POSITION) : SV_TARGET {
         float alpha;
 
         color = purple_gradient;
-        alpha = 0.94;
+        alpha = opacity;
 
         // Scrollbar thumb
         if (scrollbar_width > 0 &&
@@ -92,7 +100,36 @@ float4 PixelMain(float4 sv_pos : SV_POSITION) : SV_TARGET {
 
     float3 blended_bg = lerp(purple_gradient, bg.rgb, bg.a);
     float3 color = lerp(blended_bg, fg.rgb, fg.a * glyph_texel.a);
-    float alpha = lerp(0.94, 1.0, fg.a * glyph_texel.a);
+    float alpha = lerp(opacity, 1.0, fg.a * glyph_texel.a);
+
+    // Cursor rendering
+    if (col == cursor_x && row == cursor_y) {
+        float4 cursor_color = UnpackRgba(cursor_color_packed);
+        bool in_cursor = false;
+        if (cursor_style == 0) { // Block
+            in_cursor = true;
+        } else if (cursor_style == 1) { // Pipe
+            if (cell_pixel.x < 2) {
+                in_cursor = true;
+            }
+        }
+
+        if (in_cursor) {
+            if (cursor_style == 0) {
+                float3 inv_bg = cursor_color.rgb;
+                float3 inv_fg = UnpackRgba(background).rgb;
+                
+                float3 block_bg = lerp(blended_bg, inv_bg, cursor_alpha);
+                float3 block_fg = lerp(fg.rgb, inv_fg, cursor_alpha);
+                
+                color = lerp(block_bg, block_fg, fg.a * glyph_texel.a);
+            } else {
+                // Pipe cursor: Draw a thin line
+                color = lerp(color, cursor_color.rgb, cursor_alpha);
+            }
+        }
+    }
 
     return float4(color * alpha, alpha);
 }
+

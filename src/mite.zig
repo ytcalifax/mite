@@ -18,6 +18,9 @@ const WM_APP_CHILD_PROCESS_DATA_RESULT = 0x12345678;
 const TIMER_CURSOR = 1;
 const TIMER_SELECTION_FADE = 2;
 
+const MIN_COLS = 20;
+const MIN_ROWS = 5;
+
 const KeyMapping = struct {
     vk: u16,
     seq: []const u8,
@@ -279,8 +282,8 @@ fn calcWindowRect(dpi: u32, rect: win32.RECT, edge: win32.WPARAM, cell_size: win
     const client_h = win_h - inset.cy;
 
     const grid_w = client_w -| @as(i32, @intCast(sb_px));
-    const col_count = @max(1, @divTrunc(grid_w + @divTrunc(cell_size.cx, 2), cell_size.cx));
-    const row_count = @max(1, @divTrunc(client_h + @divTrunc(cell_size.cy, 2), cell_size.cy));
+    const col_count = @max(MIN_COLS, @divTrunc(grid_w + @divTrunc(cell_size.cx, 2), cell_size.cx));
+    const row_count = @max(MIN_ROWS, @divTrunc(client_h + @divTrunc(cell_size.cy, 2), cell_size.cy));
 
     const snap_client_w = col_count * cell_size.cx + @as(i32, @intCast(sb_px));
     const snap_client_h = row_count * cell_size.cy;
@@ -416,8 +419,8 @@ fn WndProc(
             const cs = global.renderer.cell_size;
             const grid_w = client_size.cx -| @as(i32, @intCast(d3d11.scrollbarWidth(win32.dpiFromHwnd(hwnd))));
             const cell_count: GridPos = .{
-                .row = @intCast(@max(1, @divTrunc(client_size.cy + cs.cy - 1, cs.cy))),
-                .col = @intCast(@max(1, @divTrunc(grid_w + cs.cx - 1, cs.cx))),
+                .row = @intCast(@max(MIN_ROWS, @divTrunc(client_size.cy + cs.cy - 1, cs.cy))),
+                .col = @intCast(@max(MIN_COLS, @divTrunc(grid_w + cs.cx - 1, cs.cx))),
             };
 
             var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -651,11 +654,13 @@ fn WndProc(
             return 0;
         },
         win32.WM_WINDOWPOSCHANGED => {
+            const wp: *win32.WINDOWPOS = @ptrFromInt(@as(usize, @bitCast(lparam)));
+            if (wp.flags.NOSIZE != 0 and wp.flags.NOMOVE != 0) return 0;
+            if (win32.IsIconic(hwnd) != 0) return 0;
+
             const state = stateFromHwnd(hwnd);
             const client_size = win32.getClientSize(hwnd);
             const cs = global.renderer.cell_size;
-            const MIN_COLS = 20;
-            const MIN_ROWS = 5;
             const y_padding = 2;
 
             const grid_w = client_size.cx -| @as(i32, @intCast(d3d11.scrollbarWidth(win32.dpiFromHwnd(hwnd))));

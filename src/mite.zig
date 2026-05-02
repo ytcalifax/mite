@@ -18,6 +18,51 @@ const WM_APP_CHILD_PROCESS_DATA_RESULT = 0x12345678;
 const TIMER_CURSOR = 1;
 const TIMER_SELECTION_FADE = 2;
 
+const KeyMapping = struct {
+    vk: u16,
+    seq: []const u8,
+    app: ?[]const u8 = null,
+};
+
+const key_mappings = [_]KeyMapping{
+    .{ .vk = @intFromEnum(win32.VK_BACK), .seq = "\x7f" },
+    .{ .vk = @intFromEnum(win32.VK_UP), .seq = "\x1b[A", .app = "\x1bOA" },
+    .{ .vk = @intFromEnum(win32.VK_DOWN), .seq = "\x1b[B", .app = "\x1bOB" },
+    .{ .vk = @intFromEnum(win32.VK_RIGHT), .seq = "\x1b[C", .app = "\x1bOC" },
+    .{ .vk = @intFromEnum(win32.VK_LEFT), .seq = "\x1b[D", .app = "\x1bOD" },
+    .{ .vk = @intFromEnum(win32.VK_HOME), .seq = "\x1b[H", .app = "\x1bOH" },
+    .{ .vk = @intFromEnum(win32.VK_END), .seq = "\x1b[F", .app = "\x1bOF" },
+    .{ .vk = @intFromEnum(win32.VK_INSERT), .seq = "\x1b[2~" },
+    .{ .vk = @intFromEnum(win32.VK_DELETE), .seq = "\x1b[3~" },
+    .{ .vk = @intFromEnum(win32.VK_PRIOR), .seq = "\x1b[5~" },
+    .{ .vk = @intFromEnum(win32.VK_NEXT), .seq = "\x1b[6~" },
+    .{ .vk = @intFromEnum(win32.VK_F1), .seq = "\x1bOP" },
+    .{ .vk = @intFromEnum(win32.VK_F2), .seq = "\x1bOQ" },
+    .{ .vk = @intFromEnum(win32.VK_F3), .seq = "\x1bOR" },
+    .{ .vk = @intFromEnum(win32.VK_F4), .seq = "\x1bOS" },
+    .{ .vk = @intFromEnum(win32.VK_F5), .seq = "\x1b[15~" },
+    .{ .vk = @intFromEnum(win32.VK_F6), .seq = "\x1b[17~" },
+    .{ .vk = @intFromEnum(win32.VK_F7), .seq = "\x1b[18~" },
+    .{ .vk = @intFromEnum(win32.VK_F8), .seq = "\x1b[19~" },
+    .{ .vk = @intFromEnum(win32.VK_F9), .seq = "\x1b[20~" },
+    .{ .vk = @intFromEnum(win32.VK_F10), .seq = "\x1b[21~" },
+    .{ .vk = @intFromEnum(win32.VK_F12), .seq = "\x1b[24~" },
+};
+
+const ShortcutMapping = struct {
+    vk: u16,
+    ctrl: bool = false,
+    shift: bool = false,
+    alt: bool = false,
+    action: enum { paste, fullscreen },
+};
+
+const shortcut_mappings = [_]ShortcutMapping{
+    .{ .vk = @intFromEnum(win32.VK_V), .ctrl = true, .shift = true, .action = .paste },
+    .{ .vk = @intFromEnum(win32.VK_INSERT), .shift = true, .action = .paste },
+    .{ .vk = @intFromEnum(win32.VK_F11), .action = .fullscreen },
+};
+
 const global = struct {
     var icons: Icons = undefined;
     var renderer: d3d11 = undefined;
@@ -306,6 +351,55 @@ fn toggleFullscreen(hwnd: win32.HWND) void {
         _ = win32.SetWindowPos(hwnd, null, 0, 0, 0, 0,
             .{ .NOMOVE = 1, .NOSIZE = 1, .NOZORDER = 1, .NOOWNERZORDER = 1, .DRAWFRAME = 1 });
     }
+}
+
+fn translateKey(wparam: win32.WPARAM, app_cursor: bool, buf: []u8) ?[]const u8 {
+    const vk: u16 = @intCast(wparam);
+
+    var modifier: u8 = 1;
+    if (win32.GetKeyState(@intFromEnum(win32.VK_SHIFT)) < 0) modifier += 1;
+    if (win32.GetKeyState(@intFromEnum(win32.VK_MENU)) < 0) modifier += 2;
+    if (win32.GetKeyState(@intFromEnum(win32.VK_CONTROL)) < 0) modifier += 4;
+
+    for (key_mappings) |m| {
+        if (m.vk == vk) {
+            if (modifier > 1) {
+                if (m.seq.len >= 3 and m.seq[0] == '\x1b' and m.seq[1] == '[') {
+                    const last = m.seq[m.seq.len - 1];
+                    if (last == '~') {
+                        const code = m.seq[2 .. m.seq.len - 1];
+                        return std.fmt.bufPrint(buf, "\x1b[{s};{d}~", .{ code, modifier }) catch null;
+                    } else {
+                        return std.fmt.bufPrint(buf, "\x1b[1;{d}{c}", .{ modifier, last }) catch null;
+                    }
+                }
+            }
+
+            if (app_cursor) {
+                return m.app orelse m.seq;
+            }
+            return m.seq;
+        }
+    }
+    return null;
+}
+
+fn handleShortcut(hwnd: win32.HWND, state: *State, wparam: win32.WPARAM) bool {
+    const vk: u16 = @intCast(wparam);
+    const ctrl = win32.GetKeyState(@intFromEnum(win32.VK_CONTROL)) < 0;
+    const shift = win32.GetKeyState(@intFromEnum(win32.VK_SHIFT)) < 0;
+    const alt = win32.GetKeyState(@intFromEnum(win32.VK_MENU)) < 0;
+
+    for (shortcut_mappings) |m| {
+        if (m.vk == vk and m.ctrl == ctrl and m.shift == shift and m.alt == alt) {
+            switch (m.action) {
+                .paste => pasteClipboard(hwnd, state),
+                .fullscreen => toggleFullscreen(hwnd),
+            }
+            return true;
+        }
+    }
+    return false;
 }
 
 fn WndProc(
@@ -631,70 +725,32 @@ fn WndProc(
             return 0;
         },
         win32.WM_KEYDOWN => {
-                    const state = stateFromHwnd(hwnd);
+            const state = stateFromHwnd(hwnd);
+            if (handleShortcut(hwnd, state, wparam)) return 0;
 
-                    const pty = state.child_process.pty orelse {
-                        return 0;
-                    };
-                    if ((wparam == @intFromEnum(win32.VK_V) and win32.GetKeyState(@intFromEnum(win32.VK_CONTROL)) < 0 and win32.GetKeyState(@intFromEnum(win32.VK_SHIFT)) < 0) or
-                        (wparam == @intFromEnum(win32.VK_INSERT) and win32.GetKeyState(@intFromEnum(win32.VK_SHIFT)) < 0))
-                    {
-                        pasteClipboard(hwnd, state);
-                        return 0;
-                    }
+            const pty = state.child_process.pty orelse return 0;
+            const screen = state.term.screens.active;
 
-                    const screen = state.term.screens.active;
-                    if (screen.selection != null) {
-                        screen.clearSelection();
-                        global.selection_fade = 0;
-                        _ = win32.KillTimer(hwnd, TIMER_SELECTION_FADE);
-                        win32.invalidateHwnd(hwnd);
-                    }
+            if (screen.selection != null) {
+                screen.clearSelection();
+                global.selection_fade = 0;
+                _ = win32.KillTimer(hwnd, TIMER_SELECTION_FADE);
+                win32.invalidateHwnd(hwnd);
+            }
 
-                    if (!screen.viewportIsBottom()) {
-                        screen.scroll(.active);
-                        win32.invalidateHwnd(hwnd);
-                    }
+            if (!screen.viewportIsBottom()) {
+                screen.scroll(.active);
+                win32.invalidateHwnd(hwnd);
+            }
 
-                    const app_cursor = state.term.modes.values.cursor_keys;
+            var buf: [32]u8 = undefined;
+            if (translateKey(wparam, state.term.modes.values.cursor_keys, &buf)) |seq| {
+                pty.writeFlushAll(seq) catch |e| log.err("write to pty failed: {any}", .{e});
+                return 0;
+            }
 
-                    const seq: ?[]const u8 = switch (wparam) {
-                        @intFromEnum(win32.VK_BACK) => "\x7f",
-                        @intFromEnum(win32.VK_UP) => if (app_cursor) "\x1bOA" else "\x1b[A",
-                        @intFromEnum(win32.VK_DOWN) => if (app_cursor) "\x1bOB" else "\x1b[B",
-                        @intFromEnum(win32.VK_RIGHT) => if (app_cursor) "\x1bOC" else "\x1b[C",
-                        @intFromEnum(win32.VK_LEFT) => if (app_cursor) "\x1bOD" else "\x1b[D",
-                        @intFromEnum(win32.VK_HOME) => if (app_cursor) "\x1bOH" else "\x1b[H",
-                        @intFromEnum(win32.VK_END) => if (app_cursor) "\x1bOF" else "\x1b[F",
-                        @intFromEnum(win32.VK_INSERT) => "\x1b[2~",
-                        @intFromEnum(win32.VK_DELETE) => "\x1b[3~",
-                        @intFromEnum(win32.VK_PRIOR) => "\x1b[5~",
-                        @intFromEnum(win32.VK_NEXT) => "\x1b[6~",
-                        @intFromEnum(win32.VK_F1) => "\x1bOP",
-                        @intFromEnum(win32.VK_F2) => "\x1bOQ",
-                        @intFromEnum(win32.VK_F3) => "\x1bOR",
-                        @intFromEnum(win32.VK_F4) => "\x1bOS",
-                        @intFromEnum(win32.VK_F5) => "\x1b[15~",
-                        @intFromEnum(win32.VK_F6) => "\x1b[17~",
-                        @intFromEnum(win32.VK_F7) => "\x1b[18~",
-                        @intFromEnum(win32.VK_F8) => "\x1b[19~",
-                        @intFromEnum(win32.VK_F9) => "\x1b[20~",
-                        @intFromEnum(win32.VK_F10) => "\x1b[21~",
-                        @intFromEnum(win32.VK_F11) => {
-                            toggleFullscreen(hwnd);
-                            return 0;
-                        },
-                        @intFromEnum(win32.VK_F12) => "\x1b[24~",
-                        else => null,
-                    };
-
-                    if (seq) |s| {
-                        pty.writeFlushAll(s) catch |e| log.err("write to pty failed: {any}", .{e});
-                        return 0;
-                    }
-
-                    return win32.DefWindowProcW(hwnd, msg, wparam, lparam);
-                },
+            return win32.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
         win32.WM_CHAR => {
             const state = stateFromHwnd(hwnd);
             const pty = state.child_process.pty orelse return 0;

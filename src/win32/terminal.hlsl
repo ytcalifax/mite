@@ -64,16 +64,13 @@ float4 PixelMain(float4 sv_pos : SV_POSITION) : SV_TARGET {
     noise = (noise - 0.5) / 255.0;
     dynamic_bg += noise;
 
-    uint grid_pixel_width = col_count * cell_size.x;
-
     // 4. Scrollbar area
-    if (sv_pos.x >= grid_pixel_width) {
+    if (scrollbar_width > 0 && sv_pos.x >= scrollbar_x) {
         float3 color = dynamic_bg;
         float alpha = opacity;
 
         // Scrollbar thumb - made slightly lighter than the background
-        if (scrollbar_width > 0 &&
-            sv_pos.y >= scrollbar_y && sv_pos.y < scrollbar_y + scrollbar_height)
+        if (sv_pos.y >= scrollbar_y && sv_pos.y < scrollbar_y + scrollbar_height)
         {
             color = lerp(color, float3(1.0, 1.0, 1.0), 0.05);
         }
@@ -84,6 +81,7 @@ float4 PixelMain(float4 sv_pos : SV_POSITION) : SV_TARGET {
     // 5. Cell grid logic
     uint col = sv_pos.x / cell_size.x;
     uint row = sv_pos.y / cell_size.y;
+    if (col >= col_count || row >= row_count) return float4(dynamic_bg * opacity, opacity);
     uint cell_index = row * col_count + col;
 
     Cell cell = cells[cell_index];

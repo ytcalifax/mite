@@ -18,8 +18,10 @@ const WM_APP_CHILD_PROCESS_DATA_RESULT = 0x12345678;
 const TIMER_CURSOR = 1;
 const TIMER_SELECTION_FADE = 2;
 
-const MIN_COLS = 20;
-const MIN_ROWS = 5;
+const MIN_COLS = 40;
+const MIN_ROWS = 10;
+const MAX_COLS = 160;
+const MAX_ROWS = 1000;
 
 const KeyMapping = struct {
     vk: u16,
@@ -653,6 +655,20 @@ fn WndProc(
             rect.* = new_rect;
             return 0;
         },
+        win32.WM_GETMINMAXINFO => {
+            const mmi: *win32.MINMAXINFO = @ptrFromInt(@as(usize, @bitCast(lparam)));
+            const dpi = win32.dpiFromHwnd(hwnd);
+            const cs = global.renderer.cell_size;
+            const inset = getClientInset(dpi);
+            const sb_px = d3d11.scrollbarWidth(dpi);
+
+            const min_client_w = @as(i32, @intCast(MIN_COLS)) * cs.cx + @as(i32, @intCast(sb_px));
+            const min_client_h = @as(i32, @intCast(MIN_ROWS)) * cs.cy + 2; // y_padding
+
+            mmi.ptMinTrackSize.x = min_client_w + inset.cx;
+            mmi.ptMinTrackSize.y = min_client_h + inset.cy;
+            return 0;
+        },
         win32.WM_WINDOWPOSCHANGED => {
             const wp: *win32.WINDOWPOS = @ptrFromInt(@as(usize, @bitCast(lparam)));
             if (wp.flags.NOSIZE != 0 and wp.flags.NOMOVE != 0) return 0;
@@ -665,8 +681,8 @@ fn WndProc(
 
             const grid_w = client_size.cx -| @as(i32, @intCast(d3d11.scrollbarWidth(win32.dpiFromHwnd(hwnd))));
 
-            const col_count: u16 = @intCast(@max(MIN_COLS, @divTrunc(@max(1, grid_w), cs.cx)));
-            const row_count: u16 = @intCast(@max(MIN_ROWS, @divTrunc(@max(1, client_size.cy - y_padding), cs.cy)));
+            const col_count: u16 = @intCast(@min(MAX_COLS, @max(MIN_COLS, @divTrunc(@max(1, grid_w), cs.cx))));
+            const row_count: u16 = @intCast(@min(MAX_ROWS, @max(MIN_ROWS, @divTrunc(@max(1, client_size.cy - y_padding), cs.cy))));
 
             if (state.term.cols != col_count or state.term.rows != row_count) {
                 state.term.resize(global.term_arena.allocator(), col_count, row_count) catch |e|
@@ -708,8 +724,8 @@ fn WndProc(
 
             const client_size = win32.getClientSize(hwnd);
             const grid_w = client_size.cx -| @as(i32, @intCast(d3d11.scrollbarWidth(current_dpi)));
-            const col_count = @max(1, @divTrunc(grid_w, cs.cx));
-            const row_count = @max(1, @divTrunc(client_size.cy, cs.cy));
+            const col_count = @min(MAX_COLS, @max(MIN_COLS, @divTrunc(grid_w, cs.cx)));
+            const row_count = @min(MAX_ROWS, @max(MIN_ROWS, @divTrunc(client_size.cy, cs.cy)));
 
             const new_cs = global.renderer.cellSizeForDpi(new_dpi);
             const new_client_w = col_count * new_cs.cx + @as(i32, @intCast(d3d11.scrollbarWidth(new_dpi)));

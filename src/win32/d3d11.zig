@@ -402,9 +402,10 @@ pub fn render(
     }
 
     const cs = self.cell_size_xy;
+    const shader_col: u32 = term.cols;
+    const shader_row: u32 = term.rows;
+
     const grid_w: u32 = client_w -| @as(u32, @intCast(scrollbarWidth(win32.dpiFromHwnd(hwnd))));
-    const shader_col: u32 = @max(1, @divTrunc(grid_w + cs.x - 1, cs.x));
-    const shader_row: u32 = @max(1, @divTrunc(client_h + cs.y - 1, cs.y));
 
     const default_fg = Config.parseColor(self.config.foreground) catch 0xc8c4d0;
     const default_bg = Config.parseColor(self.config.background) catch 0x140f1a;

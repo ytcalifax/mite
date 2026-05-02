@@ -611,7 +611,7 @@ pub fn render(
             const overlay_fg = Rgba8.fromU24(0xffffff, 255);
 
             var text_buf: [20]u8 = undefined;
-            const text = std.fmt.bufPrint(&text_buf, "{any}x{any}", .{ term.cols, term.rows }) catch unreachable;
+            const text = std.fmt.bufPrint(&text_buf, "{any}x{any}", .{ term.cols, term.rows }) catch "??x??";
 
             const text_len: u32 = @intCast(text.len);
             const pad: u32 = 2;

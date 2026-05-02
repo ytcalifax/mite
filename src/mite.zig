@@ -1163,7 +1163,10 @@ fn copyToClipboard(hwnd: win32.HWND, utf8: [:0]const u8) void {
     {
         const ptr: [*]u16 = @ptrCast(@alignCast(win32.GlobalLock(hmem) orelse return));
         defer globalUnlock(hmem);
-        const len = std.unicode.utf8ToUtf16Le(ptr[0 .. u16_len + 1], utf8) catch unreachable;
+        const len = std.unicode.utf8ToUtf16Le(ptr[0 .. u16_len + 1], utf8) catch |err| {
+            log.err("failed to encode clipboard text as UTF-16: {any}", .{err});
+            return;
+        };
         ptr[len] = 0;
     }
 
@@ -1230,7 +1233,10 @@ pub fn main() !void {
     defer config_arena.deinit();
     global.config = Config.load(config_arena.allocator()) catch |err| blk: {
         log.err("failed to load config: {any}", .{err});
-        const names = config_arena.allocator().alloc([]const u8, 2) catch @panic("OOM");
+        const names = config_arena.allocator().alloc([]const u8, 2) catch {
+            log.err("OOM while allocating fallback font names", .{});
+            return;
+        };
         names[0] = "Consolas 7NF";
         names[1] = "Consolas";
         break :blk Config{ .font_names = names };

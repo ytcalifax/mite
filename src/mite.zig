@@ -677,40 +677,34 @@ fn WndProc(
             mmi.ptMinTrackSize.y = min_client_h + inset.cy;
             return 0;
         },
-        win32.WM_WINDOWPOSCHANGED => {
-            const wp: *win32.WINDOWPOS = @ptrFromInt(@as(usize, @bitCast(lparam)));
-            if (wp.flags.NOSIZE != 0 and wp.flags.NOMOVE != 0) return 0;
-            if (win32.IsIconic(hwnd) != 0) return 0;
+        win32.WM_SIZE => {
+            if (wparam == win32.SIZE_MINIMIZED) return 0;
 
             const state = stateFromHwnd(hwnd);
-            const client_size = win32.getClientSize(hwnd);
-            const cs = global.renderer.cell_size;
-            const dpi = win32.dpiFromHwnd(hwnd);
-            const cell_count = calcGridSize(client_size, cs, dpi);
-            const col_count = cell_count.col;
-            const row_count = cell_count.row;
 
-            if (state.term.cols != col_count or state.term.rows != row_count) {
-                state.term.resize(global.gpa.allocator(), col_count, row_count) catch |e|
-                    log.err("Terminal.resize failed: {any}", .{e});
+            const lp_usize = @as(usize, @bitCast(lparam));
+            const width = @as(u16, @truncate(lp_usize));
+            const height = @as(u16, @truncate(lp_usize >> 16));
 
-                var resize_err: Error = undefined;
-                state.child_process.resize(&resize_err, .{
-                    .row = row_count,
-                    .col = col_count,
-                }) catch |e| log.err("ChildProcess.resize failed: {any} - {s}", .{ e, resize_err.what });
-            }
-            const cursor_alpha = Config.calculateCursorAlpha(global.cursor_phase, global.config);
-            global.renderer.render(
-                hwnd,
-                state.term,
-                global.resizing,
-                global.mouse_in_scrollbar,
-                if (global.mouse_capture == .selecting) 1.0 else global.selection_fade,
-                cursor_alpha
-            );
+            if (width < 10 or height < 10) return 0;
 
-            _ = win32.ValidateRect(hwnd, null);
+            const client_size = win32.SIZE{
+                .cx = @as(i32, @intCast(width)),
+                .cy = @as(i32, @intCast(height)),
+            };
+
+            const dpi = win32.GetDpiForWindow(hwnd);
+            const grid = calcGridSize(client_size, global.renderer.cell_size, dpi);
+
+            state.term.resize(global.term_arena.allocator(), grid.col, grid.row) catch |err| {
+                log.err("Failed to resize terminal: {any}", .{err});
+            };
+
+            var out_err: Error = undefined;
+            state.child_process.resize(&out_err, grid) catch |err| {
+                log.err("Failed to resize PTY: {s} ({any})", .{ out_err.what, err });
+            };
+
             return 0;
         },
         win32.WM_PAINT => {

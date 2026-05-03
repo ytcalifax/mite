@@ -691,7 +691,7 @@ fn WndProc(
             const row_count = cell_count.row;
 
             if (state.term.cols != col_count or state.term.rows != row_count) {
-                state.term.resize(global.term_arena.allocator(), col_count, row_count) catch |e|
+                state.term.resize(global.gpa.allocator(), col_count, row_count) catch |e|
                     log.err("Terminal.resize failed: {any}", .{e});
 
                 var resize_err: Error = undefined;

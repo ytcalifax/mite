@@ -155,10 +155,21 @@ const State = struct {
     }
 };
 
+const Y_PADDING = 2;
+
 const GridPos = struct {
     row: u16,
     col: u16,
 };
+
+fn calcGridSize(client_size: win32.SIZE, cs: win32.SIZE, dpi: u32) GridPos {
+    const sb_px = d3d11.scrollbarWidth(dpi);
+    const grid_w = client_size.cx -| @as(i32, @intCast(sb_px));
+    return .{
+        .col = @intCast(@min(MAX_COLS, @max(MIN_COLS, @divTrunc(@max(1, grid_w), cs.cx)))),
+        .row = @intCast(@min(MAX_ROWS, @max(MIN_ROWS, @divTrunc(@max(1, client_size.cy - Y_PADDING), cs.cy)))),
+    };
+}
 
 fn stateFromHwnd(hwnd: win32.HWND) *State {
     const s = &global.state.?;
@@ -241,11 +252,11 @@ fn calcWindowPlacement(
         80 * cell_size.cx + @as(i32, @intCast(sb_px));
 
     const client_h: i32 = if (opt.rows) |rows|
-        @as(i32, @intCast(rows)) * cell_size.cy
+        @as(i32, @intCast(rows)) * cell_size.cy + Y_PADDING
     else if (opt.height) |h|
         @as(i32, @intCast(h))
     else
-        24 * cell_size.cy;
+        24 * cell_size.cy + Y_PADDING;
 
     const win_w = client_w + inset.cx;
     const win_h = client_h + inset.cy;
@@ -285,10 +296,10 @@ fn calcWindowRect(dpi: u32, rect: win32.RECT, edge: win32.WPARAM, cell_size: win
 
     const grid_w = client_w -| @as(i32, @intCast(sb_px));
     const col_count = @max(MIN_COLS, @divTrunc(grid_w + @divTrunc(cell_size.cx, 2), cell_size.cx));
-    const row_count = @max(MIN_ROWS, @divTrunc(client_h + @divTrunc(cell_size.cy, 2), cell_size.cy));
+    const row_count = @max(MIN_ROWS, @divTrunc(client_h - Y_PADDING + @divTrunc(cell_size.cy, 2), cell_size.cy));
 
     const snap_client_w = col_count * cell_size.cx + @as(i32, @intCast(sb_px));
-    const snap_client_h = row_count * cell_size.cy;
+    const snap_client_h = row_count * cell_size.cy + Y_PADDING;
     const snap_win_w = snap_client_w + inset.cx;
     const snap_win_h = snap_client_h + inset.cy;
 
@@ -419,11 +430,8 @@ fn WndProc(
 
             const client_size = win32.getClientSize(hwnd);
             const cs = global.renderer.cell_size;
-            const grid_w = client_size.cx -| @as(i32, @intCast(d3d11.scrollbarWidth(win32.dpiFromHwnd(hwnd))));
-            const cell_count: GridPos = .{
-                .row = @intCast(@max(MIN_ROWS, @divTrunc(client_size.cy + cs.cy - 1, cs.cy))),
-                .col = @intCast(@max(MIN_COLS, @divTrunc(grid_w + cs.cx - 1, cs.cx))),
-            };
+            const dpi = win32.dpiFromHwnd(hwnd);
+            const cell_count = calcGridSize(client_size, cs, dpi);
 
             var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer arena.deinit();
@@ -663,7 +671,7 @@ fn WndProc(
             const sb_px = d3d11.scrollbarWidth(dpi);
 
             const min_client_w = @as(i32, @intCast(MIN_COLS)) * cs.cx + @as(i32, @intCast(sb_px));
-            const min_client_h = @as(i32, @intCast(MIN_ROWS)) * cs.cy + 2; // y_padding
+            const min_client_h = @as(i32, @intCast(MIN_ROWS)) * cs.cy + Y_PADDING;
 
             mmi.ptMinTrackSize.x = min_client_w + inset.cx;
             mmi.ptMinTrackSize.y = min_client_h + inset.cy;
@@ -677,12 +685,10 @@ fn WndProc(
             const state = stateFromHwnd(hwnd);
             const client_size = win32.getClientSize(hwnd);
             const cs = global.renderer.cell_size;
-            const y_padding = 2;
-
-            const grid_w = client_size.cx -| @as(i32, @intCast(d3d11.scrollbarWidth(win32.dpiFromHwnd(hwnd))));
-
-            const col_count: u16 = @intCast(@min(MAX_COLS, @max(MIN_COLS, @divTrunc(@max(1, grid_w), cs.cx))));
-            const row_count: u16 = @intCast(@min(MAX_ROWS, @max(MIN_ROWS, @divTrunc(@max(1, client_size.cy - y_padding), cs.cy))));
+            const dpi = win32.dpiFromHwnd(hwnd);
+            const cell_count = calcGridSize(client_size, cs, dpi);
+            const col_count = cell_count.col;
+            const row_count = cell_count.row;
 
             if (state.term.cols != col_count or state.term.rows != row_count) {
                 state.term.resize(global.term_arena.allocator(), col_count, row_count) catch |e|
@@ -725,11 +731,11 @@ fn WndProc(
             const client_size = win32.getClientSize(hwnd);
             const grid_w = client_size.cx -| @as(i32, @intCast(d3d11.scrollbarWidth(current_dpi)));
             const col_count = @min(MAX_COLS, @max(MIN_COLS, @divTrunc(grid_w, cs.cx)));
-            const row_count = @min(MAX_ROWS, @max(MIN_ROWS, @divTrunc(client_size.cy, cs.cy)));
+            const row_count = @min(MAX_ROWS, @max(MIN_ROWS, @divTrunc(client_size.cy - Y_PADDING, cs.cy)));
 
             const new_cs = global.renderer.cellSizeForDpi(new_dpi);
             const new_client_w = col_count * new_cs.cx + @as(i32, @intCast(d3d11.scrollbarWidth(new_dpi)));
-            const new_client_h = row_count * new_cs.cy;
+            const new_client_h = row_count * new_cs.cy + Y_PADDING;
             const new_inset = getClientInset(new_dpi);
             inout_size.* = .{
                 .cx = new_client_w + new_inset.cx,

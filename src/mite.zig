@@ -130,11 +130,11 @@ const MiteHandler = struct {
         self.inner.deinit();
     }
 
-    pub fn vt(self: *MiteHandler, comptime action: gvt.StreamAction.Tag, value: gvt.StreamAction.Value(action)) void {
+    pub fn vt(self: *MiteHandler, comptime action: gvt.StreamAction.Tag, value: gvt.StreamAction.Value(action)) !void {
         if (action == .window_title) {
             updateWindowTitle(self.hwnd, value.title);
         }
-        self.inner.vt(action, value);
+        try self.inner.vt(action, value);
     }
 };
 
@@ -832,7 +832,9 @@ fn WndProc(
             const len: usize = @bitCast(lparam);
             std.debug.assert(len > 0);
             const state = stateFromHwnd(hwnd);
-            state.vt_stream.nextSlice(buffer[0..len]);
+            state.vt_stream.nextSlice(buffer[0..len]) catch |e| {
+                log.err("vt stream failed: {any}", .{e});
+            };
             win32.invalidateHwnd(hwnd);
             return WM_APP_CHILD_PROCESS_DATA_RESULT;
         },

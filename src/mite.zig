@@ -85,6 +85,9 @@ const global = struct {
     var selection_fade: f32 = 0.0;
 };
 
+var is_resizing: bool = false;
+var last_wparam: win32.WPARAM = 0;
+
 fn updateWindowTitle(hwnd: win32.HWND, title: []const u8) void {
     const allocator = global.gpa.allocator();
 
@@ -356,16 +359,12 @@ fn toggleFullscreen(hwnd: win32.HWND) void {
             win32.GetMonitorInfoW(win32.MonitorFromWindow(hwnd, win32.MONITOR_DEFAULTTONEAREST), &mi) != 0)
         {
             _ = win32.SetWindowLongW(hwnd, win32.GWL_STYLE, style & ~overlapped_window_style);
-            _ = win32.SetWindowPos(hwnd, null, mi.rcMonitor.left, mi.rcMonitor.top,
-                mi.rcMonitor.right - mi.rcMonitor.left,
-                mi.rcMonitor.bottom - mi.rcMonitor.top,
-                .{ .NOOWNERZORDER = 1, .DRAWFRAME = 1 });
+            _ = win32.SetWindowPos(hwnd, null, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top, .{ .NOOWNERZORDER = 1, .DRAWFRAME = 1 });
         }
     } else {
         _ = win32.SetWindowLongW(hwnd, win32.GWL_STYLE, style | overlapped_window_style);
         _ = win32.SetWindowPlacement(hwnd, &state.previous_placement);
-        _ = win32.SetWindowPos(hwnd, null, 0, 0, 0, 0,
-            .{ .NOMOVE = 1, .NOSIZE = 1, .NOZORDER = 1, .NOOWNERZORDER = 1, .DRAWFRAME = 1 });
+        _ = win32.SetWindowPos(hwnd, null, 0, 0, 0, 0, .{ .NOMOVE = 1, .NOSIZE = 1, .NOZORDER = 1, .NOOWNERZORDER = 1, .DRAWFRAME = 1 });
     }
 }
 
@@ -678,32 +677,45 @@ fn WndProc(
             return 0;
         },
         win32.WM_SIZE => {
+            const state = stateFromHwnd(hwnd);
+
+            if (wparam == 0 and last_wparam == 2) {
+                return 0;
+            }
+            last_wparam = wparam;
+
+            if (is_resizing) return 0;
             if (wparam == win32.SIZE_MINIMIZED) return 0;
 
-            const state = stateFromHwnd(hwnd);
+            is_resizing = true;
+            defer is_resizing = false;
 
             const lp_usize = @as(usize, @bitCast(lparam));
             const width = @as(u16, @truncate(lp_usize));
             const height = @as(u16, @truncate(lp_usize >> 16));
 
-            if (width < 10 or height < 10) return 0;
+            const grid = calcGridSize(
+                .{ .cx = @as(i32, @intCast(width)), .cy = @as(i32, @intCast(height)) },
+                global.renderer.cell_size,
+                win32.GetDpiForWindow(hwnd),
+            );
 
-            const client_size = win32.SIZE{
-                .cx = @as(i32, @intCast(width)),
-                .cy = @as(i32, @intCast(height)),
-            };
+            if (grid.col == state.term.cols and grid.row == state.term.rows) return 0;
 
-            const dpi = win32.GetDpiForWindow(hwnd);
-            const grid = calcGridSize(client_size, global.renderer.cell_size, dpi);
+            var active_screen = state.term.screens.active;
+            active_screen.scroll(.active);
 
             state.term.resize(global.term_arena.allocator(), grid.col, grid.row) catch |err| {
-                log.err("Failed to resize terminal: {any}", .{err});
+                log.err("Terminal resize failed: {any}", .{err});
+                return 0;
             };
 
             var out_err: Error = undefined;
-            state.child_process.resize(&out_err, grid) catch |err| {
-                log.err("Failed to resize PTY: {s} ({any})", .{ out_err.what, err });
+            state.child_process.resize(&out_err, grid) catch {
+                log.err("PTY resize failed: {s}", .{out_err.what});
             };
+
+            active_screen.scroll(.active);
 
             return 0;
         },
@@ -1321,7 +1333,7 @@ pub fn main() !void {
     ) orelse return error.CreateWindowFailed;
 
     {
-       applyWindowTheme(hwnd, global.config);
+        applyWindowTheme(hwnd, global.config);
     }
 
     _ = win32.UpdateWindow(hwnd);

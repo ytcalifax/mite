@@ -31,12 +31,24 @@ pub fn measureCellSize(dwrite_factory: *win32.IDWriteFactory, text_format: *win3
 }
 
 pub fn createTextFormat(dwrite_factory: *win32.IDWriteFactory, dpi: u32, config: *const Config) !*win32.IDWriteTextFormat {
+    var collection: *win32.IDWriteFontCollection = undefined;
+    {
+        const hr = dwrite_factory.GetSystemFontCollection(&collection, win32.FALSE);
+        if (hr < 0) return error.GetSystemFontCollectionFailed;
+    }
+    defer _ = collection.IUnknown.Release();
+
     var text_format: *win32.IDWriteTextFormat = undefined;
     for (config.font_names) |name| {
         const max_u16 = 256;
         var name_u16: [max_u16:0]u16 = undefined;
         const len = std.unicode.utf8ToUtf16Le(name_u16[0..max_u16], name) catch continue;
         name_u16[len] = 0;
+
+        var index: u32 = undefined;
+        var exists: win32.BOOL = win32.FALSE;
+        const find_hr = collection.FindFamilyName(&name_u16, &index, &exists);
+        if (find_hr < 0 or exists == win32.FALSE) continue;
 
         const hr = dwrite_factory.CreateTextFormat(
             &name_u16,

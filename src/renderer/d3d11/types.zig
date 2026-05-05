@@ -32,6 +32,10 @@ pub const GridConfig = extern struct {
     cursor_y: u32,
     cursor_alpha: f32,
     cursor_style: u32,
+    tab_count: u32,
+    active_tab_index: u32,
+    tab_hover_index: i32,
+    padding: u32,
 };
 
 pub const Cell = extern struct {

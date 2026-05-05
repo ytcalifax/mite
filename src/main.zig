@@ -44,7 +44,60 @@ const global = struct {
     var mouse_capture: enum { none, scrollbar_drag, selecting } = .none;
     var scrollbar_drag_offset: f32 = 0.0;
     var selection_fade: f32 = 0.0;
+    var tab_hover_index: i32 = -1;
 };
+
+fn switchTab(state: *AppState.State, index: usize) void {
+    if (index < state.tabs.items.len and state.tabs.items[index] != null) {
+        state.active_tab_index = index;
+        win32.invalidateHwnd(state.hwnd);
+    }
+}
+
+fn getTabAtMouse(hwnd: win32.HWND, x: i32, y: i32) i32 {
+    if (y < 0 or y >= 30) return -1;
+    const state = stateFromHwnd(hwnd);
+    
+    var tab_count_real: u32 = 0;
+    for (state.tabs.items) |maybe_tab| {
+        if (maybe_tab != null) tab_count_real += 1;
+    }
+    const tab_count_visual = tab_count_real + 1; // Real tabs + "+" button
+
+    const client_size = win32.getClientSize(hwnd);
+    const sb_px = TerminalRenderer.scrollbarWidth(win32.dpiFromHwnd(hwnd));
+    const grid_w = client_size.cx -| @as(i32, @intCast(sb_px));
+
+    const tab_w: f32 = 16.0;
+    const spacing: f32 = 8.0;
+    const tab_area_width = tab_w * @as(f32, @floatFromInt(tab_count_visual)) + spacing * @as(f32, @floatFromInt(tab_count_visual - 1));
+    const tab_start_x = @as(f32, @floatFromInt(grid_w)) - tab_area_width - 8.0;
+
+    if (@as(f32, @floatFromInt(x)) >= tab_start_x and @as(f32, @floatFromInt(x)) < @as(f32, @floatFromInt(grid_w)) - 8.0) {
+        const local_x = @as(f32, @floatFromInt(x)) - tab_start_x;
+        const visual_tab_idx = @as(i32, @intFromFloat(local_x / (tab_w + spacing)));
+        const x_in_tab = fmod(local_x, (tab_w + spacing));
+        if (visual_tab_idx >= 0 and visual_tab_idx < @as(i32, @intCast(tab_count_visual)) and x_in_tab < tab_w) {
+            if (visual_tab_idx == @as(i32, @intCast(tab_count_real))) {
+                return -2; // Special value for "+" button
+            }
+
+            var current_visible: i32 = 0;
+            for (state.tabs.items, 0..) |maybe_tab, i| {
+                if (maybe_tab != null) {
+                    if (current_visible == visual_tab_idx) return @intCast(i);
+                    current_visible += 1;
+                }
+            }
+        }
+    }
+    return -1;
+}
+
+fn fmod(x: f32, y: f32) f32 {
+    return x - y * @floor(x / y);
+}
+
 
 var is_resizing: bool = false;
 var last_wparam: win32.WPARAM = 0;
@@ -196,11 +249,141 @@ fn handleShortcut(hwnd: win32.HWND, state: *AppState.State, wparam: win32.WPARAM
             switch (m.action) {
                 .paste => pasteClipboard(hwnd, state),
                 .fullscreen => window.toggleFullscreen(hwnd, state),
+                else => {},
             }
             return true;
         }
     }
     return false;
+}
+
+fn createTab(state: *AppState.State, grid: pty.GridPos) !void {
+    var target_index: ?usize = null;
+    for (state.tabs.items, 0..) |maybe_tab, i| {
+        if (maybe_tab == null) {
+            target_index = i;
+            break;
+        }
+    }
+    
+    const tab_index = target_index orelse state.tabs.items.len;
+    if (tab_index >= 100) return error.TooManyTabs;
+
+    var arena = try global.gpa.allocator().create(std.heap.ArenaAllocator);
+    errdefer global.gpa.allocator().destroy(arena);
+    arena.* = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    errdefer arena.deinit();
+
+    const shell_w = blk: {
+        const shell_cmd = global.config.shell.program;
+        const shell_args = global.config.shell.args;
+
+        var total_len: usize = shell_cmd.len + 2;
+        for (shell_args) |arg| {
+            total_len += arg.len + 3;
+        }
+
+        const full_cmd = arena.allocator().alloc(u8, total_len + 1) catch unreachable;
+        var stream = std.io.fixedBufferStream(full_cmd);
+        const writer = stream.writer();
+        writer.print("\"{s}\"", .{shell_cmd}) catch unreachable;
+        for (shell_args) |arg| {
+            writer.print(" \"{s}\"", .{arg}) catch unreachable;
+        }
+        full_cmd[stream.pos] = 0;
+        const final_cmd = full_cmd[0..stream.pos :0];
+
+        const u16_len = std.unicode.calcUtf16LeLen(final_cmd) catch |e| {
+            log.err("calcUtf16LeLen failed for '{s}': {any}", .{ final_cmd, e });
+            break :blk win32.L("cmd.exe");
+        };
+        const buf = arena.allocator().alloc(u16, u16_len + 1) catch unreachable;
+        const len = std.unicode.utf8ToUtf16Le(buf, final_cmd) catch unreachable;
+        buf[len] = 0;
+        break :blk buf[0..len :0].ptr;
+    };
+
+    var err: pty.Error = undefined;
+    const child_process = pty.ChildProcess.startConPtyWin32(
+        &err,
+        arena.allocator(),
+        null,
+        @constCast(shell_w),
+        state.hwnd,
+        WM_APP_CHILD_PROCESS_DATA + @as(u32, @intCast(tab_index)),
+        WM_APP_CHILD_PROCESS_DATA_RESULT,
+        grid,
+    ) catch |e| {
+        log.err("ChildProcess.startConPtyWin32 failed: {any} - {s}", .{ e, err.what });
+        return e;
+    };
+
+    const term = global.term_arena.allocator().create(gvt.Terminal) catch unreachable;
+    term.* = gvt.Terminal.init(global.term_arena.allocator(), .{
+        .cols = grid.col,
+        .rows = grid.row,
+    }) catch |e| {
+        log.err("Terminal.init failed: {any}", .{e});
+        return e;
+    };
+
+    const new_tab: AppState.Tab = .{
+        .child_process = child_process,
+        .term = term,
+        .vt_stream = VtHandler.VtStream(VtHandler.MiteHandler).initAlloc(global.gpa.allocator(), VtHandler.MiteHandler{
+            .inner = term.vtHandler(),
+            .hwnd = state.hwnd,
+            .update_title_fn = updateWindowTitle,
+        }),
+        .title = "Mite",
+        .arena = arena,
+    };
+
+    if (target_index) |idx| {
+        state.tabs.items[idx] = new_tab;
+    } else {
+        try state.tabs.append(global.gpa.allocator(), new_tab);
+    }
+    state.active_tab_index = tab_index;
+}
+
+fn closeTab(state: *AppState.State, index: usize) void {
+    var tab_count: usize = 0;
+    for (state.tabs.items) |maybe_tab| {
+        if (maybe_tab != null) tab_count += 1;
+    }
+    if (tab_count <= 1) return;
+
+    if (state.tabs.items[index]) |*tab| {
+        _ = win32.TerminateProcess(tab.child_process.process_handle, 0);
+        tab.arena.deinit();
+        global.gpa.allocator().destroy(tab.arena);
+        state.tabs.items[index] = null;
+    }
+
+    if (state.active_tab_index == index) {
+        // Find next available tab
+        var found = false;
+        for (index..state.tabs.items.len) |i| {
+            if (state.tabs.items[i] != null) {
+                state.active_tab_index = i;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            var i: usize = index;
+            while (i > 0) {
+                i -= 1;
+                if (state.tabs.items[i] != null) {
+                    state.active_tab_index = i;
+                    found = true;
+                    break;
+                }
+            }
+        }
+    }
+    win32.invalidateHwnd(state.hwnd);
 }
 
 fn WndProc(
@@ -209,6 +392,23 @@ fn WndProc(
     wparam: win32.WPARAM,
     lparam: win32.LPARAM,
 ) callconv(.winapi) win32.LRESULT {
+    if (msg >= WM_APP_CHILD_PROCESS_DATA and msg < WM_APP_CHILD_PROCESS_DATA + 100) {
+        const tab_index = msg - WM_APP_CHILD_PROCESS_DATA;
+        const buffer: [*]const u8 = @ptrFromInt(wparam);
+        const len: usize = @bitCast(lparam);
+        if (global.state) |*state| {
+            if (tab_index < state.tabs.items.len) {
+                if (state.tabs.items[tab_index]) |*tab| {
+                    tab.vt_stream.nextSlice(buffer[0..len]) catch |e| {
+                        log.err("vt stream failed: {any}", .{e});
+                    };
+                    win32.invalidateHwnd(hwnd);
+                }
+            }
+        }
+        return WM_APP_CHILD_PROCESS_DATA_RESULT;
+    }
+
     switch (msg) {
         win32.WM_CREATE => {
             std.debug.assert(global.state == null);
@@ -218,84 +418,15 @@ fn WndProc(
             const dpi = win32.dpiFromHwnd(hwnd);
             const cell_count = calcGridSize(client_size, cs, dpi);
 
-            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-            defer arena.deinit();
-            const shell_w = blk: {
-                const shell_cmd = global.config.shell.program;
-                const shell_args = global.config.shell.args;
-
-                // Build the command line: "shell" "arg1" "arg2" ...
-                var total_len: usize = shell_cmd.len + 2; // "shell"
-                for (shell_args) |arg| {
-                    total_len += arg.len + 3; //  "arg"
-                }
-
-                const full_cmd = arena.allocator().alloc(u8, total_len + 1) catch unreachable;
-                var stream = std.io.fixedBufferStream(full_cmd);
-                const writer = stream.writer();
-                writer.print("\"{s}\"", .{shell_cmd}) catch unreachable;
-                for (shell_args) |arg| {
-                    writer.print(" \"{s}\"", .{arg}) catch unreachable;
-                }
-                full_cmd[stream.pos] = 0;
-                const final_cmd = full_cmd[0..stream.pos :0];
-
-                const u16_len = std.unicode.calcUtf16LeLen(final_cmd) catch |e| {
-                    log.err("calcUtf16LeLen failed for '{s}': {any}", .{ final_cmd, e });
-                    const fallback = arena.allocator().alloc(u16, 8) catch unreachable;
-                    @memcpy(fallback[0..8], win32.L("cmd.exe")[0..8]);
-                    break :blk fallback[0..7:0].ptr;
-                };
-                const buf = arena.allocator().alloc(u16, u16_len + 1) catch {
-                    const fallback = arena.allocator().alloc(u16, 8) catch unreachable;
-                    @memcpy(fallback[0..8], win32.L("cmd.exe")[0..8]);
-                    break :blk fallback[0..7:0].ptr;
-                };
-                const len = std.unicode.utf8ToUtf16Le(buf, final_cmd) catch {
-                    const fallback = arena.allocator().alloc(u16, 8) catch unreachable;
-                    @memcpy(fallback[0..8], win32.L("cmd.exe")[0..8]);
-                    break :blk fallback[0..7:0].ptr;
-                };
-                buf[len] = 0;
-                break :blk buf[0..len :0].ptr;
-            };
-
-            var err: pty.Error = undefined;
-            const child_process = pty.ChildProcess.startConPtyWin32(
-                &err,
-                arena.allocator(),
-                null,
-                shell_w,
-                hwnd,
-                WM_APP_CHILD_PROCESS_DATA,
-                WM_APP_CHILD_PROCESS_DATA_RESULT,
-                cell_count,
-            ) catch |e| {
-                log.err("ChildProcess.startConPtyWin32 failed: {any} - {s}", .{ e, err.what });
-                win32.ExitProcess(1);
-            };
-
-            const term = std.heap.page_allocator.create(gvt.Terminal) catch {
-                log.err("Failed to allocate terminal state", .{});
-                win32.ExitProcess(1);
-            };
-            term.* = gvt.Terminal.init(global.term_arena.allocator(), .{
-                .cols = cell_count.col,
-                .rows = cell_count.row,
-            }) catch |e| {
-                log.err("Terminal.init failed: {any}", .{e});
-                win32.ExitProcess(1);
-            };
-
             global.state = .{
                 .hwnd = hwnd,
-                .child_process = child_process,
-                .term = term,
-                .vt_stream = VtHandler.VtStream(VtHandler.MiteHandler).initAlloc(global.gpa.allocator(), VtHandler.MiteHandler{
-                    .inner = term.vtHandler(),
-                    .hwnd = hwnd,
-                    .update_title_fn = updateWindowTitle,
-                }),
+                .tabs = .empty,
+                .active_tab_index = 0,
+            };
+
+            createTab(&global.state.?, cell_count) catch |e| {
+                log.err("Failed to create initial tab: {any}", .{e});
+                win32.ExitProcess(1);
             };
 
             global.cursor_phase = 0.0;
@@ -310,12 +441,25 @@ fn WndProc(
         win32.WM_LBUTTONDOWN => {
             const mouse_x: i32 = win32.xFromLparam(lparam);
             const mouse_y: i32 = win32.yFromLparam(lparam);
+            
+            const tab_idx = getTabAtMouse(hwnd, mouse_x, mouse_y);
+            if (tab_idx == -2) {
+                const state = stateFromHwnd(hwnd);
+                const grid = calcGridSize(win32.getClientSize(hwnd), global.renderer.cell_size, win32.dpiFromHwnd(hwnd));
+                createTab(state, grid) catch |e| log.err("createTab failed: {any}", .{e});
+                return 0;
+            } else if (tab_idx >= 0) {
+                const state = stateFromHwnd(hwnd);
+                switchTab(state, @intCast(tab_idx));
+                return 0;
+            }
+
             const client_size = win32.getClientSize(hwnd);
             const sb_px = TerminalRenderer.scrollbarWidth(win32.dpiFromHwnd(hwnd));
             const grid_w = client_size.cx -| @as(i32, @intCast(sb_px));
             if (mouse_x >= grid_w) {
                 const state = stateFromHwnd(hwnd);
-                const screen = state.term.screens.active;
+                const screen = state.activeTab().term.screens.active;
                 const sb = screen.pages.scrollbar();
                 if (sb.total > sb.len) {
                     const win_h: f32 = @floatFromInt(client_size.cy);
@@ -338,7 +482,7 @@ fn WndProc(
                 }
             } else {
                 const state = stateFromHwnd(hwnd);
-                const screen = state.term.screens.active;
+                const screen = state.activeTab().term.screens.active;
                 global.selection_fade = 0;
                 _ = win32.KillTimer(hwnd, TIMER_SELECTION_FADE);
                 const cs = global.renderer.cell_size;
@@ -355,6 +499,17 @@ fn WndProc(
             }
             return 0;
         },
+        win32.WM_MBUTTONDOWN => {
+            const mouse_x: i32 = win32.xFromLparam(lparam);
+            const mouse_y: i32 = win32.yFromLparam(lparam);
+            const tab_idx = getTabAtMouse(hwnd, mouse_x, mouse_y);
+            if (tab_idx >= 0) {
+                const state = stateFromHwnd(hwnd);
+                closeTab(state, @intCast(tab_idx));
+                return 0;
+            }
+            return 0;
+        },
         win32.WM_LBUTTONUP => {
             switch (global.mouse_capture) {
                 .none => {},
@@ -367,7 +522,7 @@ fn WndProc(
                     global.mouse_capture = .none;
                     _ = win32.ReleaseCapture();
                     const state = stateFromHwnd(hwnd);
-                    const screen = state.term.screens.active;
+                    const screen = state.activeTab().term.screens.active;
                     if (screen.selection) |sel| {
                         const alloc = global.gpa.allocator();
                         const text = screen.selectionString(alloc, .{ .sel = sel }) catch |e| {
@@ -390,7 +545,7 @@ fn WndProc(
             const state = stateFromHwnd(hwnd);
             const delta: i16 = @bitCast(win32.hiword(wparam));
             const scroll_lines: isize = if (delta > 0) -3 else 3;
-            const screen = state.term.screens.active;
+            const screen = state.activeTab().term.screens.active;
             screen.scroll(.{ .delta_row = scroll_lines });
             win32.invalidateHwnd(hwnd);
             return 0;
@@ -408,6 +563,13 @@ fn WndProc(
             }
             const mouse_x: i32 = win32.xFromLparam(lparam);
             const mouse_y: i32 = win32.yFromLparam(lparam);
+
+            const new_hover = getTabAtMouse(hwnd, mouse_x, mouse_y);
+            if (new_hover != global.tab_hover_index) {
+                global.tab_hover_index = new_hover;
+                win32.invalidateHwnd(hwnd);
+            }
+
             const client_size = win32.getClientSize(hwnd);
             const grid_w = client_size.cx -| @as(i32, @intCast(TerminalRenderer.scrollbarWidth(win32.dpiFromHwnd(hwnd))));
 
@@ -416,7 +578,7 @@ fn WndProc(
                 .scrollbar_drag => {
                     const state = stateFromHwnd(hwnd);
                     const win_h: f32 = @floatFromInt(client_size.cy);
-                    const sb = state.term.screens.active.pages.scrollbar();
+                    const sb = state.activeTab().term.screens.active.pages.scrollbar();
                     const min_track_height: f32 = 20.0;
                     const track_height = @max(min_track_height, @as(f32, @floatFromInt(sb.len)) / @as(f32, @floatFromInt(sb.total)) * win_h);
                     scrollbarDragTo(state, @as(f32, @floatFromInt(mouse_y)) - global.scrollbar_drag_offset, win_h, track_height);
@@ -424,7 +586,7 @@ fn WndProc(
                 },
                 .selecting => {
                     const state = stateFromHwnd(hwnd);
-                    const screen = state.term.screens.active;
+                    const screen = state.activeTab().term.screens.active;
                     const cs = global.renderer.cell_size;
                     const clamped_x: i32 = @max(0, @min(mouse_x, grid_w - 1));
                     const clamped_y: i32 = @max(0, @min(mouse_y, client_size.cy - 1));
@@ -448,6 +610,7 @@ fn WndProc(
         },
         win32.WM_MOUSELEAVE => {
             global.tracking_mouse = false;
+            global.tab_hover_index = -1;
             if (global.mouse_in_scrollbar) {
                 global.mouse_in_scrollbar = false;
                 win32.invalidateHwnd(hwnd);
@@ -512,18 +675,19 @@ fn WndProc(
                 win32.GetDpiForWindow(hwnd),
             );
 
-            if (grid.col == state.term.cols and grid.row == state.term.rows) return 0;
+            const tab = state.activeTab();
+            if (grid.col == tab.term.cols and grid.row == tab.term.rows) return 0;
 
-            var active_screen = state.term.screens.active;
+            var active_screen = tab.term.screens.active;
             active_screen.scroll(.active);
 
-            state.term.resize(global.term_arena.allocator(), grid.col, grid.row) catch |err| {
+            tab.term.resize(global.term_arena.allocator(), grid.col, grid.row) catch |err| {
                 log.err("Terminal resize failed: {any}", .{err});
                 return 0;
             };
 
             var out_err: pty.Error = undefined;
-            state.child_process.resize(&out_err, grid) catch {
+            tab.child_process.resize(&out_err, grid) catch {
                 log.err("PTY resize failed: {s}", .{out_err.what});
             };
 
@@ -537,7 +701,46 @@ fn WndProc(
 
             const state = stateFromHwnd(hwnd);
             const cursor_alpha = Config.calculateCursorAlpha(global.cursor_phase, global.config);
-            global.renderer.render(hwnd, state.term, global.resizing, global.mouse_in_scrollbar, if (global.mouse_capture == .selecting) 1.0 else global.selection_fade, cursor_alpha);
+            
+            var tab_count: u32 = 0;
+            for (state.tabs.items) |maybe_tab| {
+                if (maybe_tab != null) tab_count += 1;
+            }
+
+            var visible_active_idx: u32 = 0;
+            var current_visible: u32 = 0;
+            for (state.tabs.items, 0..) |maybe_tab, i| {
+                if (maybe_tab != null) {
+                    if (i == state.active_tab_index) visible_active_idx = current_visible;
+                    current_visible += 1;
+                }
+            }
+
+            var visible_hover_idx: i32 = -1;
+            if (global.tab_hover_index >= 0) {
+                var current_v: i32 = 0;
+                for (state.tabs.items, 0..) |maybe_tab, i| {
+                    if (maybe_tab != null) {
+                        if (i == @as(usize, @intCast(global.tab_hover_index))) {
+                            visible_hover_idx = current_v;
+                            break;
+                        }
+                        current_v += 1;
+                    }
+                }
+            }
+
+            global.renderer.render(
+                hwnd,
+                state.activeTab().term,
+                global.resizing,
+                global.mouse_in_scrollbar,
+                if (global.mouse_capture == .selecting) 1.0 else global.selection_fade,
+                cursor_alpha,
+                tab_count,
+                visible_active_idx,
+                visible_hover_idx,
+            );
             return 0;
         },
         win32.WM_GETDPISCALEDSIZE => {
@@ -573,8 +776,9 @@ fn WndProc(
             const state = stateFromHwnd(hwnd);
             if (handleShortcut(hwnd, state, wparam)) return 0;
 
-            const child_pty = state.child_process.pty orelse return 0;
-            const screen = state.term.screens.active;
+            const tab = state.activeTab();
+            const child_pty = tab.child_process.pty orelse return 0;
+            const screen = tab.term.screens.active;
 
             if (screen.selection != null) {
                 screen.clearSelection();
@@ -589,7 +793,7 @@ fn WndProc(
             }
 
             var buf: [32]u8 = undefined;
-            if (input.translateKey(wparam, state.term.modes.values.cursor_keys, &buf)) |seq| {
+            if (input.translateKey(wparam, tab.term.modes.values.cursor_keys, &buf)) |seq| {
                 child_pty.writeFlushAll(seq) catch |e| log.err("write to pty failed: {any}", .{e});
                 return 0;
             }
@@ -598,8 +802,9 @@ fn WndProc(
         },
         win32.WM_CHAR => {
             const state = stateFromHwnd(hwnd);
-            const child_pty = state.child_process.pty orelse return 0;
-            const screen = state.term.screens.active;
+            const tab = state.activeTab();
+            const child_pty = tab.child_process.pty orelse return 0;
+            const screen = tab.term.screens.active;
             if (!screen.viewportIsBottom()) {
                 screen.scroll(.active);
                 win32.invalidateHwnd(hwnd);
@@ -640,7 +845,7 @@ fn WndProc(
                     global.selection_fade = 0;
                     _ = win32.KillTimer(hwnd, TIMER_SELECTION_FADE);
                     const state = stateFromHwnd(hwnd);
-                    state.term.screens.active.clearSelection();
+                    state.activeTab().term.screens.active.clearSelection();
                 }
                 win32.invalidateHwnd(hwnd);
             } else if (wparam == TIMER_CURSOR) {
@@ -651,17 +856,7 @@ fn WndProc(
             }
             return 0;
         },
-        WM_APP_CHILD_PROCESS_DATA => {
-            const buffer: [*]const u8 = @ptrFromInt(wparam);
-            const len: usize = @bitCast(lparam);
-            std.debug.assert(len > 0);
-            const state = stateFromHwnd(hwnd);
-            state.vt_stream.nextSlice(buffer[0..len]) catch |e| {
-                log.err("vt stream failed: {any}", .{e});
-            };
-            win32.invalidateHwnd(hwnd);
-            return WM_APP_CHILD_PROCESS_DATA_RESULT;
-        },
+
         else => return win32.DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
@@ -708,7 +903,7 @@ fn XY(comptime T: type) type {
 }
 
 fn scrollbarDragTo(state: *AppState.State, track_top: f32, win_h: f32, track_height: f32) void {
-    const screen = state.term.screens.active;
+    const screen = state.activeTab().term.screens.active;
     const sb = screen.pages.scrollbar();
     if (sb.total <= sb.len) return;
     const max_offset = sb.total - sb.len;
@@ -720,7 +915,7 @@ fn scrollbarDragTo(state: *AppState.State, track_top: f32, win_h: f32, track_hei
 }
 
 fn pasteClipboard(hwnd: win32.HWND, state: *AppState.State) void {
-    const child_pty = state.child_process.pty orelse return;
+    const child_pty = state.activeTab().child_process.pty orelse return;
     if (win32.OpenClipboard(hwnd) == 0) return;
     defer _ = win32.CloseClipboard();
     const handle = win32.GetClipboardData(@intFromEnum(win32.CF_UNICODETEXT)) orelse return;
@@ -741,10 +936,8 @@ pub fn main() !void {
     defer _ = global.gpa.deinit();
     const gpa = global.gpa.allocator();
 
-    var args_arena = std.heap.ArenaAllocator.init(gpa);
-    defer args_arena.deinit();
-
-    var args_it = try std.process.argsWithAllocator(args_arena.allocator());
+    var args_it = try std.process.argsWithAllocator(gpa);
+    defer args_it.deinit();
     const cmdline = (try Cmdline.parse(&args_it)) orelse {
         try Cmdline.usage(std.fs.File.stderr());
         return;
@@ -838,7 +1031,7 @@ pub fn main() !void {
             break :blk &global.state.?;
         };
 
-        var handles = [1]win32.HANDLE{state.child_process.process_handle};
+        var handles = [1]win32.HANDLE{state.activeTab().child_process.process_handle};
         const wait_result = win32.MsgWaitForMultipleObjectsEx(1, &handles, win32.INFINITE, win32.QS_ALLINPUT, .{ .ALERTABLE = 1, .INPUTAVAILABLE = 1 });
         if (wait_result == 0) win32.ExitProcess(0);
 

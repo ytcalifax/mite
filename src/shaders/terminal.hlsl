@@ -15,6 +15,10 @@ cbuffer GridConfig : register(b0)
     uint cursor_y;
     float cursor_alpha;
     uint cursor_style;
+    uint tab_count;
+    uint active_tab_index;
+    int tab_hover_index;
+    uint padding;
 }
 
 struct Cell
@@ -49,27 +53,61 @@ float4 PixelMain(float4 sv_pos : SV_POSITION) : SV_TARGET {
     // 1. Resolve the actual background color from your config
     float4 config_bg = UnpackRgba(background);
 
-    // 2. Calculate dynamic background (replaces the hardcoded purple)
+    // 2. Calculate dynamic background
     float2 pos = sv_pos.xy / (cell_size * float2(col_count, row_count));
-
-    // We apply a very subtle shift to your config color based on screen position
     float3 dynamic_bg = config_bg.rgb + float3(
         lerp(-0.005, 0.005, pos.x),
         lerp(-0.01, 0.005, pos.y),
         lerp(-0.005, 0.01, (pos.x + pos.y) * 0.5)
     );
 
-    // 3. Keep your original dither/noise logic
     float noise = frac(sin(dot(sv_pos.xy, float2(12.9898, 78.233))) * 43758.5453);
     noise = (noise - 0.5) / 255.0;
     dynamic_bg += noise;
+
+    // 3. Tabs (Bookmarks) rendering
+    if (sv_pos.y < 30) {
+        float tab_w = 16.0;
+        float spacing = 8.0;
+        float total_tabs = tab_count + 1.0;
+        float tab_area_width = tab_w * total_tabs + spacing * (total_tabs - 1.0);
+        float tab_start_x = scrollbar_x - tab_area_width - 8.0;
+        
+        if (sv_pos.x >= tab_start_x && sv_pos.x < scrollbar_x - 8.0) {
+            float local_x = sv_pos.x - tab_start_x;
+            uint tab_idx = (uint)(local_x / (tab_w + spacing));
+            float x_in_tab = fmod(local_x, (tab_w + spacing));
+            
+            if (tab_idx < (uint)total_tabs && x_in_tab < tab_w) {
+                bool is_plus = (tab_idx == (uint)tab_count);
+                bool active = !is_plus && (tab_idx == active_tab_index);
+                float tab_height = active ? 24.0 : 16.0;
+                
+                if (sv_pos.y < tab_height) {
+                    float3 tab_color = active ? float3(1.0, 0.72, 0.0) : lerp(dynamic_bg, float3(1,1,1), 0.2);
+                    if (tab_idx == (uint)tab_hover_index) {
+                        tab_color = lerp(tab_color, float3(1,1,1), 0.1);
+                    }
+                    
+                    if (is_plus) {
+                        float2 center = float2(tab_w / 2.0, 16.0 / 2.0);
+                        float2 p = float2(x_in_tab, sv_pos.y) - center;
+                        if ((abs(p.x) < 1.0 && abs(p.y) < 4.0) || (abs(p.y) < 1.0 && abs(p.x) < 4.0)) {
+                            tab_color = float3(1,1,1);
+                        }
+                    }
+                    
+                    return float4(tab_color * opacity, opacity);
+                }
+            }
+        }
+    }
 
     // 4. Scrollbar area
     if (scrollbar_width > 0 && sv_pos.x >= scrollbar_x) {
         float3 color = dynamic_bg;
         float alpha = opacity;
 
-        // Scrollbar thumb - made slightly lighter than the background
         if (sv_pos.y >= scrollbar_y && sv_pos.y < scrollbar_y + scrollbar_height)
         {
             color = lerp(color, float3(1.0, 1.0, 1.0), 0.05);
@@ -100,7 +138,7 @@ float4 PixelMain(float4 sv_pos : SV_POSITION) : SV_TARGET {
     uint2 texture_coord = glyph_cell_pos * cell_size + cell_pixel;
     float4 glyph_texel = glyph_texture.Load(int3(texture_coord, 0));
 
-    // 6. Blending logic using the new dynamic_bg
+    // 6. Blending logic
     float3 blended_bg = lerp(dynamic_bg, bg.rgb, bg.a);
     float3 color = lerp(blended_bg, fg.rgb, fg.a * glyph_texel.a);
     float alpha = lerp(opacity, 1.0, fg.a * glyph_texel.a);
@@ -120,7 +158,7 @@ float4 PixelMain(float4 sv_pos : SV_POSITION) : SV_TARGET {
         if (in_cursor) {
             if (cursor_style == 0) {
                 float3 inv_bg = cursor_color.rgb;
-                float3 inv_fg = config_bg.rgb; // Use config background for the inverted text
+                float3 inv_fg = config_bg.rgb;
 
                 float3 block_bg = lerp(blended_bg, inv_bg, cursor_alpha);
                 float3 block_fg = lerp(fg.rgb, inv_fg, cursor_alpha);
@@ -134,4 +172,5 @@ float4 PixelMain(float4 sv_pos : SV_POSITION) : SV_TARGET {
 
     return float4(color * alpha, alpha);
 }
+
 

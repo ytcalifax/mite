@@ -232,6 +232,9 @@ pub fn render(
     mouse_in_scrollbar: bool,
     selection_fade: f32,
     cursor_alpha: f32,
+    tab_count: u32,
+    active_tab_index: u32,
+    tab_hover_index: i32,
 ) void {
     const sz = win32.getClientSize(hwnd);
     const client_w: u32 = @intCast(sz.cx);
@@ -318,12 +321,11 @@ pub fn render(
         grid_config.cursor_alpha = cursor_alpha;
         grid_config.cursor_style = @intFromEnum(self.config.cursor.style);
 
-        // Compute scrollbar geometry in pixels (within the reserved scrollbar area)
-        // Only show the thumb when scrolled up or mouse is hovering over the scrollbar
+        // Compute scrollbar geometry in pixels
         const sb = screen.pages.scrollbar();
         const show_scrollbar = sb.total > sb.len and (!screen.viewportIsBottom() or mouse_in_scrollbar);
+        grid_config.scrollbar_x = @floatFromInt(grid_w);
         if (show_scrollbar) {
-            const sb_x: f32 = @floatFromInt(grid_w);
             const sb_w: f32 = @floatFromInt(scrollbarWidth(win32.dpiFromHwnd(hwnd)));
             const win_h: f32 = @floatFromInt(client_h);
             const min_track_height: f32 = 20.0;
@@ -331,16 +333,19 @@ pub fn render(
             const max_offset = sb.total - sb.len;
             const track_y = @as(f32, @floatFromInt(sb.offset)) / @as(f32, @floatFromInt(max_offset)) * (win_h - track_height);
 
-            grid_config.scrollbar_x = sb_x;
             grid_config.scrollbar_width = sb_w;
             grid_config.scrollbar_y = track_y;
             grid_config.scrollbar_height = track_height;
         } else {
-            grid_config.scrollbar_x = 0;
             grid_config.scrollbar_width = 0;
             grid_config.scrollbar_y = 0;
             grid_config.scrollbar_height = 0;
         }
+
+        grid_config.tab_count = tab_count;
+        grid_config.active_tab_index = active_tab_index;
+        grid_config.tab_hover_index = tab_hover_index;
+        grid_config.padding = 0;
     }
 
     // Build cell buffer from terminal state

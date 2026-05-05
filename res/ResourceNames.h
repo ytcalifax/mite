@@ -1,0 +1,6 @@
+#define ID_ICON_MITE 1
+
+#define VERSION_MAJOR 0
+#define VERSION_MINOR 0
+#define VERSION_PATCH 1
+#define VERSION_STR "0.0.1"

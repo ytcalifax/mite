@@ -1,10 +1,12 @@
 <h1>
-<p align="center">
-  mite
+<p style="text-align: center;">
+  <img width="243" height="199" alt="CuteMite" src="res/mite.png" />
+  <br>mite
 </p>
 </h1>
 
 A native terminal emulator with libghostty at its core.
+
 
 ### Windows
 

@@ -15,18 +15,18 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         }),
-        .win32_manifest = b.path("src/win32/mite.manifest"),
+        .win32_manifest = b.path("res/mite.manifest"),
     });
 
     if (b.lazyDependency("win32", .{})) |win32_dep| {
         exe.root_module.addImport("win32", win32_dep.module("win32"));
-        exe.root_module.addIncludePath(b.path("src/win32"));
+        exe.root_module.addIncludePath(b.path("res"));
         exe.root_module.addIncludePath(b.path("src/shaders"));
     }
     exe.root_module.addImport("vt", vt);
 
     exe.addWin32ResourceFile(.{
-        .file = b.path("src/win32/mite.rc"),
+        .file = b.path("res/mite.rc"),
     });
     exe.subsystem = .Windows;
 
@@ -47,7 +47,7 @@ pub fn build(b: *std.Build) void {
     });
     if (b.lazyDependency("win32", .{})) |win32_dep| {
         tests.root_module.addImport("win32", win32_dep.module("win32"));
-        tests.root_module.addIncludePath(b.path("src/win32"));
+        tests.root_module.addIncludePath(b.path("res"));
     }
     tests.root_module.addImport("vt", vt);
 

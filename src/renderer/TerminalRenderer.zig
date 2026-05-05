@@ -283,9 +283,9 @@ pub fn render(
 
     const grid_w: u32 = client_w -| @as(u32, @intCast(scrollbarWidth(win32.dpiFromHwnd(hwnd))));
 
-    const default_fg = Config.parseColor(self.config.foreground) catch 0xc8c4d0;
-    const default_bg = Config.parseColor(self.config.background) catch 0x140f1a;
-    const cursor_color = Config.parseColor(self.config.cursor) catch 0xffffff;
+    const default_fg = Config.parseColor(self.config.colors.foreground) catch 0xc8c4d0;
+    const default_bg = Config.parseColor(self.config.colors.background) catch 0x140f1a;
+    const cursor_color = Config.parseColor(self.config.colors.cursor) catch 0xffffff;
 
     const screen = term.screens.active;
 
@@ -312,11 +312,11 @@ pub fn render(
         grid_config.background = types.Rgba8.fromU24(default_bg, 255);
         grid_config.foreground = types.Rgba8.fromU24(default_fg, 255);
         grid_config.cursor_color = types.Rgba8.fromU24(cursor_color, 255);
-        grid_config.opacity = self.config.opacity;
+        grid_config.opacity = self.config.window.opacity;
         grid_config.cursor_x = if (screen.viewportIsBottom() and term.modes.get(.cursor_visible)) screen.cursor.x else 0xffff_ffff;
         grid_config.cursor_y = screen.cursor.y;
         grid_config.cursor_alpha = cursor_alpha;
-        grid_config.cursor_style = @intFromEnum(self.config.cursor_style);
+        grid_config.cursor_style = @intFromEnum(self.config.cursor.style);
 
         // Compute scrollbar geometry in pixels (within the reserved scrollbar area)
         // Only show the thumb when scrolled up or mouse is hovering over the scrollbar

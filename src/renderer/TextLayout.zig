@@ -39,7 +39,7 @@ pub fn createTextFormat(dwrite_factory: *win32.IDWriteFactory, dpi: u32, config:
     defer _ = collection.IUnknown.Release();
 
     var text_format: *win32.IDWriteTextFormat = undefined;
-    for (config.font_names) |name| {
+    for (config.font.names) |name| {
         const max_u16 = 256;
         var name_u16: [max_u16:0]u16 = undefined;
         const len = std.unicode.utf8ToUtf16Le(name_u16[0..max_u16], name) catch continue;
@@ -56,7 +56,7 @@ pub fn createTextFormat(dwrite_factory: *win32.IDWriteFactory, dpi: u32, config:
             .NORMAL,
             .NORMAL,
             .NORMAL,
-            win32.scaleDpi(f32, config.font_size, dpi),
+            win32.scaleDpi(f32, config.font.size, dpi),
             win32.L(""),
             &text_format,
         );
@@ -69,7 +69,7 @@ pub fn createTextFormat(dwrite_factory: *win32.IDWriteFactory, dpi: u32, config:
         .NORMAL,
         .NORMAL,
         .NORMAL,
-        win32.scaleDpi(f32, config.font_size, dpi),
+        win32.scaleDpi(f32, config.font.size, dpi),
         win32.L(""),
         &text_format,
     );

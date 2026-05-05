@@ -54,11 +54,11 @@ pub fn applyWindowTheme(hwnd: win32.HWND, config: Config) void {
     const dark_value: c_int = 1;
     _ = win32.DwmSetWindowAttribute(hwnd, win32.DWMWA_USE_IMMERSIVE_DARK_MODE, &dark_value, @sizeOf(@TypeOf(dark_value)));
 
-    const bg_rgb = Config.parseColor(config.background) catch 0x140f1a;
+    const bg_rgb = Config.parseColor(config.colors.background) catch 0x140f1a;
     const caption_color = rgbToColorRef(bg_rgb);
     _ = win32.DwmSetWindowAttribute(hwnd, win32.DWMWA_CAPTION_COLOR, &caption_color, @sizeOf(@TypeOf(caption_color)));
 
-    const fg_rgb = Config.parseColor(config.foreground) catch 0xc8c4d0;
+    const fg_rgb = Config.parseColor(config.colors.foreground) catch 0xc8c4d0;
     const text_color = rgbToColorRef(fg_rgb);
     _ = win32.DwmSetWindowAttribute(hwnd, win32.DWMWA_TEXT_COLOR, &text_color, @sizeOf(@TypeOf(text_color)));
 

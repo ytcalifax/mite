@@ -221,8 +221,8 @@ fn WndProc(
             var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer arena.deinit();
             const shell_w = blk: {
-                const shell_cmd = global.config.shell;
-                const shell_args = global.config.shell_args;
+                const shell_cmd = global.config.shell.program;
+                const shell_args = global.config.shell.args;
 
                 // Build the command line: "shell" "arg1" "arg2" ...
                 var total_len: usize = shell_cmd.len + 2; // "shell"
@@ -645,7 +645,7 @@ fn WndProc(
                 win32.invalidateHwnd(hwnd);
             } else if (wparam == TIMER_CURSOR) {
                 global.cursor_phase += 16.0;
-                const total_ms = @as(f32, @floatFromInt(global.config.cursor_fade_in + global.config.cursor_fade_out));
+                const total_ms = @as(f32, @floatFromInt(global.config.cursor.fade_in + global.config.cursor.fade_out));
                 if (total_ms > 0 and global.cursor_phase >= total_ms) global.cursor_phase -= total_ms;
                 win32.invalidateHwnd(hwnd);
             }
@@ -760,7 +760,7 @@ pub fn main() !void {
         };
         names[0] = "Consolas 7NF";
         names[1] = "Consolas";
-        break :blk Config{ .font_names = names };
+        break :blk Config{ .font = .{ .names = names } };
     };
 
     const opt: WindowPlacementOptions = .{

@@ -11,7 +11,7 @@ pub fn build(b: *std.Build) void {
     const exe = b.addExecutable(.{
         .name = "mite",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/mite.zig"),
+            .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
         }),
@@ -21,6 +21,7 @@ pub fn build(b: *std.Build) void {
     if (b.lazyDependency("win32", .{})) |win32_dep| {
         exe.root_module.addImport("win32", win32_dep.module("win32"));
         exe.root_module.addIncludePath(b.path("src/win32"));
+        exe.root_module.addIncludePath(b.path("src/shaders"));
     }
     exe.root_module.addImport("vt", vt);
 
@@ -39,7 +40,7 @@ pub fn build(b: *std.Build) void {
 
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/mite.zig"),
+            .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
         }),

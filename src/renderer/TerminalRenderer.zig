@@ -3,51 +3,15 @@ const D3d11Renderer = @This();
 const std = @import("std");
 const vt = @import("vt");
 const win32 = @import("win32").everything;
-const GlyphIndexCache = @import("GlyphIndexCache.zig");
-const Config = @import("../Config.zig").Config;
+const GlyphCache = @import("glyph/GlyphCache.zig");
+const Config = @import("../config/Config.zig").Config;
+const TextLayout = @import("TextLayout.zig");
+const d3d_core = @import("d3d11/core.zig");
+const types = @import("d3d11/types.zig");
+const ShaderCells = @import("d3d11/ShaderCells.zig").ShaderCells;
+const Texture = @import("d3d11/Texture.zig");
 
-const log = std.log.scoped(.d3d);
-
-// Shared types with the shader
-const shader = struct {
-    const GridConfig = extern struct {
-        cell_size: [2]u32,
-        col_count: u32,
-        row_count: u32,
-        scrollbar_y: f32,
-        scrollbar_height: f32,
-        scrollbar_x: f32,
-        scrollbar_width: f32,
-        background: Rgba8,
-        foreground: Rgba8,
-        cursor_color: Rgba8,
-        opacity: f32,
-        cursor_x: u32,
-        cursor_y: u32,
-        cursor_alpha: f32,
-        cursor_style: u32,
-    };
-    const Cell = extern struct {
-        glyph_index: u32,
-        background: Rgba8,
-        foreground: Rgba8,
-    };
-};
-
-const Rgba8 = packed struct(u32) {
-    a: u8,
-    b: u8,
-    g: u8,
-    r: u8,
-    fn fromU24(c: u24, a: u8) Rgba8 {
-        return .{
-            .r = @intCast((c >> 16) & 0xFF),
-            .g = @intCast((c >> 8) & 0xFF),
-            .b = @intCast(c & 0xFF),
-            .a = a,
-        };
-    }
-};
+const log = std.log.scoped(.terminal_renderer);
 
 // D3D11 core
 device: *win32.ID3D11Device,
@@ -73,14 +37,14 @@ dcomp_visual: ?*win32.IDCompositionVisual = null,
 swap_chain: ?*win32.IDXGISwapChain2 = null,
 target_view: ?*win32.ID3D11RenderTargetView = null,
 shader_cells: ShaderCells = .{},
-glyph_texture: GlyphTexture = .{},
+glyph_texture: Texture.GlyphTexture = .{},
 glyph_cache_arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator),
-glyph_cache: ?GlyphIndexCache = null,
-glyph_cache_cell_size: ?CellXY = null,
-staging_texture: StagingTexture = .{},
+glyph_cache: ?GlyphCache = null,
+glyph_cache_cell_size: ?types.CellXY = null,
+staging_texture: Texture.StagingTexture = .{},
 
 cell_size: win32.SIZE,
-cell_size_xy: CellXY,
+cell_size_xy: types.CellXY,
 
 config: *const Config,
 
@@ -90,114 +54,26 @@ pub fn scrollbarWidth(dpi: u32) u16 {
     return @intFromFloat(@round(@as(f32, @floatFromInt(scrollbar_logical_width)) * @as(f32, @floatFromInt(dpi)) / 96.0));
 }
 
-fn measureCellSize(dwrite_factory: *win32.IDWriteFactory, text_format: *win32.IDWriteTextFormat) !win32.SIZE {
-    var text_layout: *win32.IDWriteTextLayout = undefined;
-    {
-        const hr = dwrite_factory.CreateTextLayout(
-            win32.L("\u{2588}"),
-            1,
-            text_format,
-            std.math.floatMax(f32),
-            std.math.floatMax(f32),
-            &text_layout,
-        );
-        if (hr < 0) return error.CreateTextLayoutFailed;
-    }
-    defer _ = text_layout.IUnknown.Release();
-
-    var metrics: win32.DWRITE_TEXT_METRICS = undefined;
-    {
-        const hr = text_layout.GetMetrics(&metrics);
-        if (hr < 0) return error.GetMetricsFailed;
-    }
-    return .{
-        .cx = @intFromFloat(@floor(metrics.width)),
-        .cy = @intFromFloat(@floor(metrics.height)),
-    };
-}
-
-fn createTextFormat(dwrite_factory: *win32.IDWriteFactory, dpi: u32, config: *const Config) !*win32.IDWriteTextFormat {
-    var text_format: *win32.IDWriteTextFormat = undefined;
-    for (config.font_names) |name| {
-        const max_u16 = 256;
-        var name_u16: [max_u16:0]u16 = undefined;
-        const len = std.unicode.utf8ToUtf16Le(name_u16[0..max_u16], name) catch continue;
-        name_u16[len] = 0;
-
-        const hr = dwrite_factory.CreateTextFormat(
-            &name_u16,
-            null,
-            .NORMAL,
-            .NORMAL,
-            .NORMAL,
-            win32.scaleDpi(f32, config.font_size, dpi),
-            win32.L(""),
-            &text_format,
-        );
-        if (hr >= 0) return text_format;
-    }
-
-    const hr = dwrite_factory.CreateTextFormat(
-        win32.L(""),
-        null,
-        .NORMAL,
-        .NORMAL,
-        .NORMAL,
-        win32.scaleDpi(f32, config.font_size, dpi),
-        win32.L(""),
-        &text_format,
-    );
-    if (hr < 0) return error.CreateTextFormatFailed;
-    return text_format;
-}
-
 pub fn cellSizeForDpi(self: *D3d11Renderer, dpi: u32) win32.SIZE {
     if (dpi == self.dpi) return self.cell_size;
-    const text_format = createTextFormat(self.dwrite_factory, dpi, self.config) catch |err| {
+    const text_format = TextLayout.createTextFormat(self.dwrite_factory, dpi, self.config) catch |err| {
         log.err("failed to create text format for dpi {any}: {any}", .{ dpi, err });
         return self.cell_size;
     };
     defer _ = text_format.IUnknown.Release();
-    return measureCellSize(self.dwrite_factory, text_format) catch |err| {
+    return TextLayout.measureCellSize(self.dwrite_factory, text_format) catch |err| {
         log.err("failed to measure cell size for dpi {any}: {any}", .{ dpi, err });
         return self.cell_size;
     };
 }
 
-const CellXY = struct {
-    x: u16,
-    y: u16,
-    fn eql(a: CellXY, b: CellXY) bool {
-        return a.x == b.x and a.y == b.y;
-    }
-};
-
 pub fn init(dpi: u32, config: *const Config) !D3d11Renderer {
-    // Create D3D11 device
-    const levels = [_]win32.D3D_FEATURE_LEVEL{.@"11_0"};
-    var device: *win32.ID3D11Device = undefined;
-    var context: *win32.ID3D11DeviceContext = undefined;
-    {
-        const hr = win32.D3D11CreateDevice(
-            null,
-            .HARDWARE,
-            null,
-            .{ .BGRA_SUPPORT = 1, .SINGLETHREADED = 1 },
-            &levels,
-            levels.len,
-            win32.D3D11_SDK_VERSION,
-            &device,
-            null,
-            &context,
-        );
-        if (hr < 0) return error.D3D11DeviceCreationFailed;
-    }
-    log.info("D3D11 device created", .{});
+    const device, const context = try d3d_core.createDevice();
 
     // Compile shaders
-    const shader_source = @embedFile("terminal.hlsl");
+    const shader_source = @embedFile("../shaders/terminal.hlsl");
 
-    const vs_blob = try compileShaderBlob(shader_source, "VertexMain", "vs_5_0");
+    const vs_blob = try d3d_core.compileShaderBlob(shader_source, "VertexMain", "vs_5_0");
     defer _ = vs_blob.IUnknown.Release();
     var vertex_shader: *win32.ID3D11VertexShader = undefined;
     {
@@ -210,7 +86,7 @@ pub fn init(dpi: u32, config: *const Config) !D3d11Renderer {
         if (hr < 0) return error.VertexShaderCreationFailed;
     }
 
-    const ps_blob = try compileShaderBlob(shader_source, "PixelMain", "ps_5_0");
+    const ps_blob = try d3d_core.compileShaderBlob(shader_source, "PixelMain", "ps_5_0");
     defer _ = ps_blob.IUnknown.Release();
     var pixel_shader: *win32.ID3D11PixelShader = undefined;
     {
@@ -227,7 +103,7 @@ pub fn init(dpi: u32, config: *const Config) !D3d11Renderer {
     var const_buf: *win32.ID3D11Buffer = undefined;
     {
         const desc: win32.D3D11_BUFFER_DESC = .{
-            .ByteWidth = std.mem.alignForward(u32, @sizeOf(shader.GridConfig), 16),
+            .ByteWidth = std.mem.alignForward(u32, @sizeOf(types.GridConfig), 16),
             .Usage = .DYNAMIC,
             .BindFlags = .{ .CONSTANT_BUFFER = 1 },
             .CPUAccessFlags = .{ .WRITE = 1 },
@@ -249,10 +125,10 @@ pub fn init(dpi: u32, config: *const Config) !D3d11Renderer {
         if (hr < 0) return error.DWriteFactoryCreationFailed;
     }
 
-    const text_format = try createTextFormat(dwrite_factory, dpi, config);
+    const text_format = try TextLayout.createTextFormat(dwrite_factory, dpi, config);
 
-    const cell_size = try measureCellSize(dwrite_factory, text_format);
-    const cell_size_xy: CellXY = .{
+    const cell_size = try TextLayout.measureCellSize(dwrite_factory, text_format);
+    const cell_size_xy: types.CellXY = .{
         .x = @intCast(cell_size.cx),
         .y = @intCast(cell_size.cy),
     };
@@ -291,13 +167,13 @@ pub fn init(dpi: u32, config: *const Config) !D3d11Renderer {
 pub fn updateDpi(self: *D3d11Renderer, dpi: u32) void {
     if (dpi == self.dpi) return;
     _ = self.text_format.IUnknown.Release();
-    self.text_format = createTextFormat(self.dwrite_factory, dpi, self.config) catch |err| {
+    self.text_format = TextLayout.createTextFormat(self.dwrite_factory, dpi, self.config) catch |err| {
         log.err("failed to create text format for dpi {any}: {any}", .{ dpi, err });
         return;
     };
     self.dpi = dpi;
 
-    const new_cs = measureCellSize(self.dwrite_factory, self.text_format) catch |err| {
+    const new_cs = TextLayout.measureCellSize(self.dwrite_factory, self.text_format) catch |err| {
         log.err("failed to measure cell size for dpi {any}: {any}", .{ dpi, err });
         return;
     };
@@ -428,14 +304,14 @@ pub fn render(
             return;
         }
         defer self.context.Unmap(&self.const_buf.ID3D11Resource, 0);
-        const grid_config: *shader.GridConfig = @ptrCast(@alignCast(mapped.pData));
+        const grid_config: *types.GridConfig = @ptrCast(@alignCast(mapped.pData));
         grid_config.cell_size[0] = cs.x;
         grid_config.cell_size[1] = cs.y;
         grid_config.col_count = shader_col;
         grid_config.row_count = shader_row;
-        grid_config.background = Rgba8.fromU24(default_bg, 255);
-        grid_config.foreground = Rgba8.fromU24(default_fg, 255);
-        grid_config.cursor_color = Rgba8.fromU24(cursor_color, 255);
+        grid_config.background = types.Rgba8.fromU24(default_bg, 255);
+        grid_config.foreground = types.Rgba8.fromU24(default_fg, 255);
+        grid_config.cursor_color = types.Rgba8.fromU24(cursor_color, 255);
         grid_config.opacity = self.config.opacity;
         grid_config.cursor_x = if (screen.viewportIsBottom() and term.modes.get(.cursor_visible)) screen.cursor.x else 0xffff_ffff;
         grid_config.cursor_y = screen.cursor.y;
@@ -470,7 +346,7 @@ pub fn render(
     // Build cell buffer from terminal state
     const cell_count = shader_col * shader_row;
     const blank_glyph = self.generateGlyph(.{ .codepoint = ' ', .half = .single });
-    const bg_rgba: Rgba8 = .{
+    const bg_rgba: types.Rgba8 = .{
         .r = @intCast((default_bg >> 16) & 0xFF),
         .g = @intCast((default_bg >> 8) & 0xFF),
         .b = @intCast(default_bg & 0xFF),
@@ -496,7 +372,7 @@ pub fn render(
         }
         defer self.context.Unmap(&self.shader_cells.cell_buf.ID3D11Resource, 0);
 
-        const cells_out: [*]shader.Cell = @ptrCast(@alignCast(mapped.pData));
+        const cells_out: [*]types.Cell = @ptrCast(@alignCast(mapped.pData));
 
         const palette = &term.colors.palette.current;
         var row_it = screen.pages.rowIterator(.right_down, .{ .viewport = .{} }, null);
@@ -546,8 +422,8 @@ pub fn render(
                     else => {},
                 }
 
-                var bg = if (cell_bg == default_bg) bg_rgba else Rgba8.fromU24(cell_bg, 255);
-                var fg = Rgba8.fromU24(cell_fg, 255);
+                var bg = if (cell_bg == default_bg) bg_rgba else types.Rgba8.fromU24(cell_bg, 255);
+                var fg = types.Rgba8.fromU24(cell_fg, 255);
 
                 // Highlight selected cells (with fade)
                 if (screen.selection) |sel| {
@@ -599,7 +475,7 @@ pub fn render(
         // Fill remaining rows with blanks
         while (screen_row < shader_row) : (screen_row += 1) {
             const dst_row_offset = screen_row * shader_col;
-            @memset(cells_out[dst_row_offset..][0..shader_col], shader.Cell{
+            @memset(cells_out[dst_row_offset..][0..shader_col], types.Cell{
                 .glyph_index = blank_glyph,
                 .background = bg_rgba,
                 .foreground = bg_rgba,
@@ -608,8 +484,8 @@ pub fn render(
 
         // Draw resize overlay (e.g. "80x25")
         if (resizing) {
-            const overlay_bg = Rgba8.fromU24(0x333333, 255);
-            const overlay_fg = Rgba8.fromU24(0xffffff, 255);
+            const overlay_bg = types.Rgba8.fromU24(0x333333, 255);
+            const overlay_fg = types.Rgba8.fromU24(0xffffff, 255);
 
             var text_buf: [20]u8 = undefined;
             const text = std.fmt.bufPrint(&text_buf, "{any}x{any}", .{ term.cols, term.rows }) catch "??x??";
@@ -690,12 +566,12 @@ pub fn render(
 
 // --- Glyph generation ---
 
-fn generateGlyph(self: *D3d11Renderer, key: GlyphIndexCache.Key) u32 {
+fn generateGlyph(self: *D3d11Renderer, key: GlyphCache.Key) u32 {
     const cs = self.cell_size_xy;
     const tex_cell_count = getTextureMaxCellCount(cs);
     const tex_total: u32 = @as(u32, tex_cell_count.x) * @as(u32, tex_cell_count.y);
 
-    const tex_pixel: CellXY = .{
+    const tex_pixel: types.CellXY = .{
         .x = tex_cell_count.x * cs.x,
         .y = tex_cell_count.y * cs.y,
     };
@@ -717,7 +593,7 @@ fn generateGlyph(self: *D3d11Renderer, key: GlyphIndexCache.Key) u32 {
 
     const cache = blk: {
         if (self.glyph_cache) |*c| break :blk c;
-        self.glyph_cache = GlyphIndexCache.init(
+        self.glyph_cache = GlyphCache.init(
             self.glyph_cache_arena.allocator(),
             tex_total,
         ) catch |err| {
@@ -733,10 +609,10 @@ fn generateGlyph(self: *D3d11Renderer, key: GlyphIndexCache.Key) u32 {
     }) {
         .newly_reserved => |reserved| {
             const pos = cellPosFromIndex(reserved.index, tex_cell_count.x);
-            const coord: CellXY = .{ .x = cs.x * pos.x, .y = cs.y * pos.y };
+            const coord: types.CellXY = .{ .x = cs.x * pos.x, .y = cs.y * pos.y };
 
             // Render glyph to staging texture (2 cells wide to accommodate wide chars).
-            const staging_size: CellXY = .{ .x = cs.x * 2, .y = cs.y };
+            const staging_size: types.CellXY = .{ .x = cs.x * 2, .y = cs.y };
             const staging = self.staging_texture.getOrCreate(self.device, self.d2d_factory, staging_size) catch |err| {
                 log.err("failed to get staging texture: {any}", .{err});
                 return 0;
@@ -956,234 +832,16 @@ fn createRenderTargetView(
     return target_view;
 }
 
-// --- Internal types ---
-
-const ShaderCells = struct {
-    count: u32 = 0,
-    cell_buf: *win32.ID3D11Buffer = undefined,
-    cell_view: *win32.ID3D11ShaderResourceView = undefined,
-
-    fn updateCount(self: *ShaderCells, device: *win32.ID3D11Device, count: u32) !void {
-        if (count == self.count) return;
-        self.release();
-        if (count > 0) {
-            const buf_desc: win32.D3D11_BUFFER_DESC = .{
-                .ByteWidth = count * @sizeOf(shader.Cell),
-                .Usage = .DYNAMIC,
-                .BindFlags = .{ .SHADER_RESOURCE = 1 },
-                .CPUAccessFlags = .{ .WRITE = 1 },
-                .MiscFlags = .{ .BUFFER_STRUCTURED = 1 },
-                .StructureByteStride = @sizeOf(shader.Cell),
-            };
-            const hr = device.CreateBuffer(&buf_desc, null, &self.cell_buf);
-            if (hr < 0) return error.CreateCellBufferFailed;
-
-            const view_desc: win32.D3D11_SHADER_RESOURCE_VIEW_DESC = .{
-                .Format = .UNKNOWN,
-                .ViewDimension = ._SRV_DIMENSION_BUFFER,
-                .Anonymous = .{
-                    .Buffer = .{
-                        .Anonymous1 = .{ .FirstElement = 0 },
-                        .Anonymous2 = .{ .NumElements = count },
-                    },
-                },
-            };
-            const hr2 = device.CreateShaderResourceView(
-                &self.cell_buf.ID3D11Resource,
-                &view_desc,
-                &self.cell_view,
-            );
-            if (hr2 < 0) return error.CreateCellViewFailed;
-        }
-        self.count = count;
-    }
-
-    fn release(self: *ShaderCells) void {
-        if (self.count != 0) {
-            _ = self.cell_view.IUnknown.Release();
-            _ = self.cell_buf.IUnknown.Release();
-            self.count = 0;
-        }
-    }
-};
-
-const GlyphTexture = struct {
-    size: ?CellXY = null,
-    obj: ?*win32.ID3D11Texture2D = null,
-    view: ?*win32.ID3D11ShaderResourceView = null,
-
-    fn updateSize(self: *GlyphTexture, device: *win32.ID3D11Device, size: CellXY) !bool {
-        if (self.size) |s| {
-            if (s.eql(size)) return true;
-            self.release();
-        }
-
-        const desc: win32.D3D11_TEXTURE2D_DESC = .{
-            .Width = size.x,
-            .Height = size.y,
-            .MipLevels = 1,
-            .ArraySize = 1,
-            .Format = .A8_UNORM,
-            .SampleDesc = .{ .Count = 1, .Quality = 0 },
-            .Usage = .DEFAULT,
-            .BindFlags = .{ .SHADER_RESOURCE = 1 },
-            .CPUAccessFlags = .{},
-            .MiscFlags = .{},
-        };
-        var obj: *win32.ID3D11Texture2D = undefined;
-        const hr = device.CreateTexture2D(&desc, null, &obj);
-        if (hr < 0) return error.CreateGlyphTextureFailed;
-        self.obj = obj;
-
-        var view: *win32.ID3D11ShaderResourceView = undefined;
-        const hr2 = device.CreateShaderResourceView(&obj.ID3D11Resource, null, &view);
-        if (hr2 < 0) return error.CreateGlyphViewFailed;
-        self.view = view;
-
-        self.size = size;
-        return false;
-    }
-
-    fn release(self: *GlyphTexture) void {
-        if (self.view) |v| _ = v.IUnknown.Release();
-        if (self.obj) |o| _ = o.IUnknown.Release();
-        self.view = null;
-        self.obj = null;
-        self.size = null;
-    }
-};
-
-const StagingTexture = struct {
-    const Cached = struct {
-        size: CellXY,
-        texture: *win32.ID3D11Texture2D,
-        render_target: *win32.ID2D1RenderTarget,
-        white_brush: *win32.ID2D1SolidColorBrush,
-    };
-    cached: ?Cached = null,
-
-    fn getOrCreate(
-        self: *StagingTexture,
-        device: *win32.ID3D11Device,
-        d2d_factory: *win32.ID2D1Factory,
-        size: CellXY,
-    ) !*Cached {
-        if (self.cached) |*c| {
-            if (c.size.eql(size)) return c;
-            self.release();
-        }
-
-        var texture: *win32.ID3D11Texture2D = undefined;
-        {
-            const desc: win32.D3D11_TEXTURE2D_DESC = .{
-                .Width = size.x,
-                .Height = size.y,
-                .MipLevels = 1,
-                .ArraySize = 1,
-                .Format = .A8_UNORM,
-                .SampleDesc = .{ .Count = 1, .Quality = 0 },
-                .Usage = .DEFAULT,
-                .BindFlags = .{ .RENDER_TARGET = 1 },
-                .CPUAccessFlags = .{},
-                .MiscFlags = .{},
-            };
-            const hr = device.CreateTexture2D(&desc, null, &texture);
-            if (hr < 0) return error.CreateStagingTextureFailed;
-        }
-
-        const dxgi_surface = try queryInterface(texture, win32.IDXGISurface);
-        defer _ = dxgi_surface.IUnknown.Release();
-
-        var render_target: *win32.ID2D1RenderTarget = undefined;
-        {
-            const props = win32.D2D1_RENDER_TARGET_PROPERTIES{
-                .type = .DEFAULT,
-                .pixelFormat = .{ .format = .A8_UNORM, .alphaMode = .PREMULTIPLIED },
-                .dpiX = 0,
-                .dpiY = 0,
-                .usage = .{},
-                .minLevel = .DEFAULT,
-            };
-            const hr = d2d_factory.CreateDxgiSurfaceRenderTarget(dxgi_surface, &props, &render_target);
-            if (hr < 0) return error.CreateDxgiSurfaceRenderTargetFailed;
-        }
-
-        // Set pixel unit mode
-        const dc = try queryInterface(render_target, win32.ID2D1DeviceContext);
-        defer _ = dc.IUnknown.Release();
-        dc.SetUnitMode(win32.D2D1_UNIT_MODE_PIXELS);
-
-        var white_brush: *win32.ID2D1SolidColorBrush = undefined;
-        {
-            const hr = render_target.CreateSolidColorBrush(
-                &.{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
-                null,
-                &white_brush,
-            );
-            if (hr < 0) return error.CreateBrushFailed;
-        }
-
-        self.cached = .{
-            .size = size,
-            .texture = texture,
-            .render_target = render_target,
-            .white_brush = white_brush,
-        };
-        return &self.cached.?;
-    }
-
-    fn release(self: *StagingTexture) void {
-        if (self.cached) |*c| {
-            _ = c.white_brush.IUnknown.Release();
-            _ = c.render_target.IUnknown.Release();
-            _ = c.texture.IUnknown.Release();
-            self.cached = null;
-        }
-    }
-};
-
 // --- Helpers ---
 
-fn compileShaderBlob(
-    source: []const u8,
-    entry: [*:0]const u8,
-    target: [*:0]const u8,
-) !*win32.ID3DBlob {
-    var blob: *win32.ID3DBlob = undefined;
-    var error_blob: ?*win32.ID3DBlob = null;
-    const hr = win32.D3DCompile(
-        source.ptr,
-        source.len,
-        "terminal.hlsl",
-        null,
-        null,
-        entry,
-        target,
-        0,
-        0,
-        @ptrCast(&blob),
-        @ptrCast(&error_blob),
-    );
-    if (error_blob) |err| {
-        defer _ = err.IUnknown.Release();
-        if (err.GetBufferPointer()) |buf_ptr| {
-            const ptr: [*]const u8 = @ptrCast(buf_ptr);
-            const str = ptr[0..err.GetBufferSize()];
-            log.err("shader error:\n{s}", .{str});
-        }
-    }
-    if (hr < 0) return error.ShaderCompilationFailed;
-    return blob;
-}
-
-fn getTextureMaxCellCount(cell_size: CellXY) CellXY {
+fn getTextureMaxCellCount(cell_size: types.CellXY) types.CellXY {
     return .{
         .x = @intCast(@divTrunc(win32.D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION, cell_size.x)),
         .y = @intCast(@divTrunc(win32.D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION, cell_size.y)),
     };
 }
 
-fn cellPosFromIndex(index: u32, column_count: u16) CellXY {
+fn cellPosFromIndex(index: u32, column_count: u16) types.CellXY {
     return .{
         .x = @intCast(index % column_count),
         .y = @intCast(@divTrunc(index, column_count)),
@@ -1215,7 +873,7 @@ fn rgbToU24(rgb: vt.color.RGB) u24 {
     return @as(u24, rgb.r) << 16 | @as(u24, rgb.g) << 8 | rgb.b;
 }
 
-fn lerpRgba8(a: Rgba8, b: Rgba8, t: f32) Rgba8 {
+fn lerpRgba8(a: types.Rgba8, b: types.Rgba8, t: f32) types.Rgba8 {
     return .{
         .r = lerpU8(a.r, b.r, t),
         .g = lerpU8(a.g, b.g, t),

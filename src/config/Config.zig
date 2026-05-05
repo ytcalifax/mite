@@ -48,7 +48,7 @@ pub const Config = struct {
                     \\  "foreground": "0xc8c4d0",
                     \\  "background": "0x140f1a",
                     \\  "cursor": "0xffffff",
-                    \\  "cursor_style": "block",
+                    \\  "cursor_style": "pipe",
                     \\  "cursor_blink": true,
                     \\  "cursor_fade_in": 400,
                     \\  "cursor_fade_out": 400,

@@ -17,7 +17,8 @@ pub const Config = struct {
     cursor_fade_in: u32 = 400,
     cursor_fade_out: u32 = 400,
     opacity: f32 = 0.94,
-    shell: []const u8 = "C:\\Windows\\System32\\cmd.exe",
+    shell: []const u8 = "cmd.exe",
+    shell_args: [][]const u8 = &.{},
 
     pub fn load(allocator: std.mem.Allocator) !Config {
         const home = std.process.getEnvVarOwned(allocator, "USERPROFILE") catch |err| {
@@ -52,7 +53,8 @@ pub const Config = struct {
                     \\  "cursor_fade_in": 400,
                     \\  "cursor_fade_out": 400,
                     \\  "opacity": 0.94,
-                    \\  "shell": "C:\\\\Windows\\\\System32\\\\cmd.exe"
+                    \\  "shell": "cmd.exe",
+                    \\  "shell_args": []
                     \\}
                 ;
                 var new_file = try std.fs.createFileAbsolute(config_path, .{});
@@ -79,6 +81,17 @@ pub const Config = struct {
         errdefer allocator.free(result.cursor);
         result.shell = try allocator.dupe(u8, parsed.value.shell);
         errdefer allocator.free(result.shell);
+
+        const args = try allocator.alloc([]const u8, parsed.value.shell_args.len);
+        errdefer allocator.free(args);
+        var arg_idx: usize = 0;
+        errdefer {
+            for (0..arg_idx) |j| allocator.free(args[j]);
+        }
+        while (arg_idx < parsed.value.shell_args.len) : (arg_idx += 1) {
+            args[arg_idx] = try allocator.dupe(u8, parsed.value.shell_args[arg_idx]);
+        }
+        result.shell_args = args;
 
         const names = try allocator.alloc([]const u8, parsed.value.font_names.len);
         errdefer allocator.free(names);

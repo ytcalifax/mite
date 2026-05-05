@@ -221,26 +221,51 @@ fn WndProc(
             var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer arena.deinit();
             const shell_w = blk: {
-                const u16_len = std.unicode.calcUtf16LeLen(global.config.shell) catch |e| {
-                    log.err("calcUtf16LeLen: {any}", .{e});
-                    break :blk win32.L("cmd.exe");
+                const shell_cmd = global.config.shell;
+                const shell_args = global.config.shell_args;
+
+                // Build the command line: "shell" "arg1" "arg2" ...
+                var total_len: usize = shell_cmd.len + 2; // "shell"
+                for (shell_args) |arg| {
+                    total_len += arg.len + 3; //  "arg"
+                }
+
+                const full_cmd = arena.allocator().alloc(u8, total_len + 1) catch unreachable;
+                var stream = std.io.fixedBufferStream(full_cmd);
+                const writer = stream.writer();
+                writer.print("\"{s}\"", .{shell_cmd}) catch unreachable;
+                for (shell_args) |arg| {
+                    writer.print(" \"{s}\"", .{arg}) catch unreachable;
+                }
+                full_cmd[stream.pos] = 0;
+                const final_cmd = full_cmd[0..stream.pos :0];
+
+                const u16_len = std.unicode.calcUtf16LeLen(final_cmd) catch |e| {
+                    log.err("calcUtf16LeLen failed for '{s}': {any}", .{ final_cmd, e });
+                    const fallback = arena.allocator().alloc(u16, 8) catch unreachable;
+                    @memcpy(fallback[0..8], win32.L("cmd.exe")[0..8]);
+                    break :blk fallback[0..7:0].ptr;
                 };
                 const buf = arena.allocator().alloc(u16, u16_len + 1) catch {
-                    break :blk win32.L("cmd.exe");
+                    const fallback = arena.allocator().alloc(u16, 8) catch unreachable;
+                    @memcpy(fallback[0..8], win32.L("cmd.exe")[0..8]);
+                    break :blk fallback[0..7:0].ptr;
                 };
-                const len = std.unicode.utf8ToUtf16Le(buf, global.config.shell) catch {
-                    break :blk win32.L("cmd.exe");
+                const len = std.unicode.utf8ToUtf16Le(buf, final_cmd) catch {
+                    const fallback = arena.allocator().alloc(u16, 8) catch unreachable;
+                    @memcpy(fallback[0..8], win32.L("cmd.exe")[0..8]);
+                    break :blk fallback[0..7:0].ptr;
                 };
                 buf[len] = 0;
-                break :blk buf[0..len :0];
+                break :blk buf[0..len :0].ptr;
             };
 
             var err: pty.Error = undefined;
             const child_process = pty.ChildProcess.startConPtyWin32(
                 &err,
                 arena.allocator(),
-                shell_w.ptr,
                 null,
+                shell_w,
                 hwnd,
                 WM_APP_CHILD_PROCESS_DATA,
                 WM_APP_CHILD_PROCESS_DATA_RESULT,

@@ -57,7 +57,7 @@ fn switchTab(state: *AppState.State, index: usize) void {
 fn getTabAtMouse(hwnd: win32.HWND, x: i32, y: i32) i32 {
     if (y < 0 or y >= 30) return -1;
     const state = stateFromHwnd(hwnd);
-    
+
     var tab_count_real: u32 = 0;
     for (state.tabs.items) |maybe_tab| {
         if (maybe_tab != null) tab_count_real += 1;
@@ -97,7 +97,6 @@ fn getTabAtMouse(hwnd: win32.HWND, x: i32, y: i32) i32 {
 fn fmod(x: f32, y: f32) f32 {
     return x - y * @floor(x / y);
 }
-
 
 var is_resizing: bool = false;
 var last_wparam: win32.WPARAM = 0;
@@ -265,7 +264,7 @@ fn createTab(state: *AppState.State, grid: pty.GridPos) !void {
             break;
         }
     }
-    
+
     const tab_index = target_index orelse state.tabs.items.len;
     if (tab_index >= 100) return error.TooManyTabs;
 
@@ -441,7 +440,7 @@ fn WndProc(
         win32.WM_LBUTTONDOWN => {
             const mouse_x: i32 = win32.xFromLparam(lparam);
             const mouse_y: i32 = win32.yFromLparam(lparam);
-            
+
             const tab_idx = getTabAtMouse(hwnd, mouse_x, mouse_y);
             if (tab_idx == -2) {
                 const state = stateFromHwnd(hwnd);
@@ -701,7 +700,7 @@ fn WndProc(
 
             const state = stateFromHwnd(hwnd);
             const cursor_alpha = Config.calculateCursorAlpha(global.cursor_phase, global.config);
-            
+
             var tab_count: u32 = 0;
             for (state.tabs.items) |maybe_tab| {
                 if (maybe_tab != null) tab_count += 1;

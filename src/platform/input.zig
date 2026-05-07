@@ -40,18 +40,6 @@ pub const ShortcutMapping = struct {
     action: enum {
         paste,
         fullscreen,
-        new_tab,
-        cycle_tabs,
-        close_tab,
-        goto_tab_1,
-        goto_tab_2,
-        goto_tab_3,
-        goto_tab_4,
-        goto_tab_5,
-        goto_tab_6,
-        goto_tab_7,
-        goto_tab_8,
-        goto_tab_9,
     },
 };
 

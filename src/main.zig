@@ -4,7 +4,6 @@ const win32 = @import("win32").everything;
 const gvt = @import("vt");
 const TerminalRenderer = @import("renderer/TerminalRenderer.zig");
 const Config = @import("config/Config.zig").Config;
-const Cmdline = @import("Cmdline.zig");
 const AppState = @import("app/AppState.zig");
 const VtHandler = @import("app/VtHandler.zig");
 const pty = @import("platform/pty.zig");
@@ -295,12 +294,62 @@ fn handleShortcut(hwnd: win32.HWND, state: *AppState.State, wparam: win32.WPARAM
                         resizeActiveTab(hwnd, state, grid, true);
                     }
                 },
-                else => {},
             }
             return true;
         }
     }
     return false;
+}
+
+fn appendWindowsQuotedArg(list: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, arg: []const u8) !void {
+    try list.append(allocator, '"');
+
+    var backslashes: usize = 0;
+    for (arg) |c| {
+        if (c == '\\') {
+            backslashes += 1;
+            continue;
+        }
+
+        if (c == '"') {
+            try list.appendNTimes(allocator, '\\', backslashes * 2 + 1);
+            try list.append(allocator, '"');
+        } else {
+            try list.appendNTimes(allocator, '\\', backslashes);
+            try list.append(allocator, c);
+        }
+        backslashes = 0;
+    }
+
+    try list.appendNTimes(allocator, '\\', backslashes * 2);
+    try list.append(allocator, '"');
+}
+
+fn makeWindowsCommandLine(allocator: std.mem.Allocator, program: []const u8, args: []const []const u8) ![:0]u8 {
+    var cmd: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer cmd.deinit(allocator);
+
+    try appendWindowsQuotedArg(&cmd, allocator, program);
+    for (args) |arg| {
+        try cmd.append(allocator, ' ');
+        try appendWindowsQuotedArg(&cmd, allocator, arg);
+    }
+    return try cmd.toOwnedSliceSentinel(allocator, 0);
+}
+
+test "makeWindowsCommandLine quotes Windows argv" {
+    const args = [_][]const u8{
+        "/c",
+        "echo \"hello\"",
+        "C:\\tmp\\",
+    };
+    const cmd = try makeWindowsCommandLine(std.testing.allocator, "C:\\Program Files\\Shell\\shell.exe", &args);
+    defer std.testing.allocator.free(cmd);
+
+    try std.testing.expectEqualStrings(
+        "\"C:\\Program Files\\Shell\\shell.exe\" \"/c\" \"echo \\\"hello\\\"\" \"C:\\tmp\\\\\"",
+        cmd,
+    );
 }
 
 fn createTab(state: *AppState.State, grid: pty.GridPos) !void {
@@ -324,27 +373,23 @@ fn createTab(state: *AppState.State, grid: pty.GridPos) !void {
         const shell_cmd = global.config.shell.program;
         const shell_args = global.config.shell.args;
 
-        var total_len: usize = shell_cmd.len + 2;
-        for (shell_args) |arg| {
-            total_len += arg.len + 3;
-        }
-
-        const full_cmd = arena.allocator().alloc(u8, total_len + 1) catch unreachable;
-        var stream = std.io.fixedBufferStream(full_cmd);
-        const writer = stream.writer();
-        writer.print("\"{s}\"", .{shell_cmd}) catch unreachable;
-        for (shell_args) |arg| {
-            writer.print(" \"{s}\"", .{arg}) catch unreachable;
-        }
-        full_cmd[stream.pos] = 0;
-        const final_cmd = full_cmd[0..stream.pos :0];
+        const final_cmd = makeWindowsCommandLine(arena.allocator(), shell_cmd, shell_args) catch |e| {
+            log.err("failed to build shell command line: {any}", .{e});
+            break :blk win32.L("cmd.exe");
+        };
 
         const u16_len = std.unicode.calcUtf16LeLen(final_cmd) catch |e| {
             log.err("calcUtf16LeLen failed for '{s}': {any}", .{ final_cmd, e });
             break :blk win32.L("cmd.exe");
         };
-        const buf = arena.allocator().alloc(u16, u16_len + 1) catch unreachable;
-        const len = std.unicode.utf8ToUtf16Le(buf, final_cmd) catch unreachable;
+        const buf = arena.allocator().alloc(u16, u16_len + 1) catch |e| {
+            log.err("failed to allocate shell command line: {any}", .{e});
+            break :blk win32.L("cmd.exe");
+        };
+        const len = std.unicode.utf8ToUtf16Le(buf, final_cmd) catch |e| {
+            log.err("utf8ToUtf16Le failed for shell command line: {any}", .{e});
+            break :blk win32.L("cmd.exe");
+        };
         buf[len] = 0;
         break :blk buf[0..len :0].ptr;
     };
@@ -1030,13 +1075,6 @@ pub fn main() !void {
     defer _ = global.gpa.deinit();
     const gpa = global.gpa.allocator();
 
-    var args_it = try std.process.argsWithAllocator(gpa);
-    defer args_it.deinit();
-    const cmdline = (try Cmdline.parse(&args_it)) orelse {
-        try Cmdline.usage(std.fs.File.stderr());
-        return;
-    };
-
     var config_arena = std.heap.ArenaAllocator.init(gpa);
     defer config_arena.deinit();
     global.config = Config.load(config_arena.allocator()) catch |err| blk: {
@@ -1051,8 +1089,8 @@ pub fn main() !void {
     };
 
     const opt: WindowPlacementOptions = .{
-        .width = @as(u32, @intFromFloat(cmdline.font_size * 50)),
-        .height = @as(u32, @intFromFloat(cmdline.font_size * 30)),
+        .width = @as(u32, @intFromFloat(global.config.font.size * 50)),
+        .height = @as(u32, @intFromFloat(global.config.font.size * 30)),
     };
 
     const maybe_monitor: ?win32.HMONITOR = win32.MonitorFromPoint(.{ .x = 0, .y = 0 }, win32.MONITOR_DEFAULTTOPRIMARY);

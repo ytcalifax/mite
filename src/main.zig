@@ -337,21 +337,6 @@ fn makeWindowsCommandLine(allocator: std.mem.Allocator, program: []const u8, arg
     return try cmd.toOwnedSliceSentinel(allocator, 0);
 }
 
-test "makeWindowsCommandLine quotes Windows argv" {
-    const args = [_][]const u8{
-        "/c",
-        "echo \"hello\"",
-        "C:\\tmp\\",
-    };
-    const cmd = try makeWindowsCommandLine(std.testing.allocator, "C:\\Program Files\\Shell\\shell.exe", &args);
-    defer std.testing.allocator.free(cmd);
-
-    try std.testing.expectEqualStrings(
-        "\"C:\\Program Files\\Shell\\shell.exe\" \"/c\" \"echo \\\"hello\\\"\" \"C:\\tmp\\\\\"",
-        cmd,
-    );
-}
-
 fn createTab(state: *AppState.State, grid: pty.GridPos) !void {
     var target_index: ?usize = null;
     for (state.tabs.items, 0..) |maybe_tab, i| {

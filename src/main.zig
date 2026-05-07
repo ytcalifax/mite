@@ -51,9 +51,22 @@ const global = struct {
 
 fn switchTab(state: *AppState.State, index: usize) void {
     if (index < state.tabs.items.len and state.tabs.items[index] != null) {
-        state.active_tab_index = index;
-        win32.invalidateHwnd(state.hwnd);
+        activateTab(state, index);
     }
+}
+
+fn currentWindowGrid(hwnd: win32.HWND) pty.GridPos {
+    return calcGridSize(
+        win32.getClientSize(hwnd),
+        global.renderer.cell_size,
+        win32.dpiFromHwnd(hwnd),
+    );
+}
+
+fn activateTab(state: *AppState.State, index: usize) void {
+    state.active_tab_index = index;
+    resizeActiveTab(state.hwnd, state, currentWindowGrid(state.hwnd), true);
+    win32.invalidateHwnd(state.hwnd);
 }
 
 fn getTabAtMouse(hwnd: win32.HWND, x: i32, y: i32) i32 {
@@ -531,7 +544,7 @@ fn selectReplacementTab(state: *AppState.State, index: usize) void {
 
     for (index..state.tabs.items.len) |i| {
         if (state.tabs.items[i] != null) {
-            state.active_tab_index = i;
+            activateTab(state, i);
             return;
         }
     }
@@ -540,7 +553,7 @@ fn selectReplacementTab(state: *AppState.State, index: usize) void {
     while (i > 0) {
         i -= 1;
         if (state.tabs.items[i] != null) {
-            state.active_tab_index = i;
+            activateTab(state, i);
             return;
         }
     }

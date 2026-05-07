@@ -21,6 +21,7 @@ const WM_APP_CHILD_PROCESS_DATA_RESULT = 0x12345678;
 
 const TIMER_CURSOR = 1;
 const TIMER_SELECTION_FADE = 2;
+const CURSOR_TIMER_MS = 33;
 
 pub const global = struct {
     pub var icons: IconResources.Pair = undefined;
@@ -100,6 +101,16 @@ pub fn handleTabDestroyResult(state: *AppState.State, result: TabLifecycle.Destr
         .quit => win32.PostQuitMessage(0),
         .paint => win32.invalidateHwnd(state.hwnd),
         .activate => |index| activateTab(state, index),
+    }
+}
+
+fn cursorAnimationEnabled() bool {
+    return global.config.cursor.blink and global.config.cursor.fade_in + global.config.cursor.fade_out > 0;
+}
+
+fn startCursorTimer(hwnd: win32.HWND) void {
+    if (cursorAnimationEnabled()) {
+        _ = win32.SetTimer(hwnd, TIMER_CURSOR, CURSOR_TIMER_MS, null);
     }
 }
 
@@ -214,7 +225,7 @@ pub fn proc(
             };
 
             global.cursor_phase = 0.0;
-            _ = win32.SetTimer(hwnd, TIMER_CURSOR, 16, null);
+            startCursorTimer(hwnd);
 
             return 0;
         },
@@ -618,7 +629,11 @@ pub fn proc(
                 }
                 win32.invalidateHwnd(hwnd);
             } else if (wparam == TIMER_CURSOR) {
-                global.cursor_phase += 16.0;
+                if (!cursorAnimationEnabled()) {
+                    _ = win32.KillTimer(hwnd, TIMER_CURSOR);
+                    return 0;
+                }
+                global.cursor_phase += CURSOR_TIMER_MS;
                 const total_ms = @as(f32, @floatFromInt(global.config.cursor.fade_in + global.config.cursor.fade_out));
                 if (total_ms > 0 and global.cursor_phase >= total_ms) global.cursor_phase -= total_ms;
                 win32.invalidateHwnd(hwnd);

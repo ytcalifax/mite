@@ -277,25 +277,28 @@ pub const ChildProcess = struct {
     ) void {
         defer win32.closeHandle(read);
         while (true) {
-            var buffer: [4096]u8 = undefined;
+            const payload = std.heap.page_allocator.create(ReadPayload) catch break;
+            payload.generation = generation;
+
             var read_len: u32 = undefined;
             if (0 == win32.ReadFile(
                 read,
-                &buffer,
-                buffer.len,
+                &payload.data,
+                payload.data.len,
                 &read_len,
                 null,
             )) {
                 const err = win32.GetLastError();
+                std.heap.page_allocator.destroy(payload);
                 if (err == .ERROR_BROKEN_PIPE) break;
                 log.err("ReadFile failed: {any}", .{err});
                 break;
             }
-            if (read_len == 0) break;
-            const payload = std.heap.page_allocator.create(ReadPayload) catch break;
-            payload.generation = generation;
+            if (read_len == 0) {
+                std.heap.page_allocator.destroy(payload);
+                break;
+            }
             payload.len = read_len;
-            @memcpy(payload.data[0..read_len], buffer[0..read_len]);
 
             if (0 == win32.PostMessageW(
                 hwnd,

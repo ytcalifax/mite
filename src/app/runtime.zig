@@ -45,6 +45,7 @@ pub fn run() !void {
     Procedure.global.icons = IconResources.load(dpi.x, dpi.y);
     Procedure.global.renderer = try TerminalRenderer.init(@max(dpi.x, dpi.y), &Procedure.global.config);
     defer Procedure.global.renderer.deinit();
+    Procedure.global.renderer.prewarmAsciiGlyphs();
 
     const cell_size = Procedure.global.renderer.cell_size;
     const placement = windowgrid.calcPlacement(maybe_monitor, @max(dpi.x, dpi.y), cell_size, opt);

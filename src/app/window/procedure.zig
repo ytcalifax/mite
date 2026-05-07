@@ -21,7 +21,9 @@ const WM_APP_CHILD_PROCESS_DATA_RESULT = 0x12345678;
 
 const TIMER_CURSOR = 1;
 const TIMER_SELECTION_FADE = 2;
+const TIMER_PTY_PAINT = 3;
 const CURSOR_TIMER_MS = 33;
+const PTY_PAINT_COALESCE_MS = 8;
 
 pub const global = struct {
     pub var icons: IconResources.Pair = undefined;
@@ -40,6 +42,8 @@ pub const global = struct {
     var scrollbar_drag_offset: f32 = 0.0;
     var selection_fade: f32 = 0.0;
     var tab_hover_index: i32 = -1;
+    var cell_buffer_dirty: bool = true;
+    var pty_paint_pending: bool = false;
 };
 
 fn switchTab(state: *AppState.State, index: usize) void {
@@ -64,7 +68,7 @@ fn activateTab(state: *AppState.State, index: usize) void {
         currentWindowGrid(state.hwnd),
         true,
     );
-    if (result.paint) win32.invalidateHwnd(state.hwnd);
+    if (result.paint) invalidateWithCells(state.hwnd);
 }
 
 fn getTabAtMouse(hwnd: win32.HWND, x: i32, y: i32) i32 {
@@ -99,7 +103,7 @@ pub fn handleTabDestroyResult(state: *AppState.State, result: TabLifecycle.Destr
     switch (result) {
         .none => {},
         .quit => win32.PostQuitMessage(0),
-        .paint => win32.invalidateHwnd(state.hwnd),
+        .paint => invalidateWithCells(state.hwnd),
         .activate => |index| activateTab(state, index),
     }
 }
@@ -111,6 +115,23 @@ fn cursorAnimationEnabled() bool {
 fn startCursorTimer(hwnd: win32.HWND) void {
     if (cursorAnimationEnabled()) {
         _ = win32.SetTimer(hwnd, TIMER_CURSOR, CURSOR_TIMER_MS, null);
+    }
+}
+
+fn markCellsDirty() void {
+    global.cell_buffer_dirty = true;
+}
+
+fn invalidateWithCells(hwnd: win32.HWND) void {
+    markCellsDirty();
+    win32.invalidateHwnd(hwnd);
+}
+
+fn schedulePtyPaint(hwnd: win32.HWND) void {
+    markCellsDirty();
+    if (!global.pty_paint_pending) {
+        global.pty_paint_pending = true;
+        _ = win32.SetTimer(hwnd, TIMER_PTY_PAINT, PTY_PAINT_COALESCE_MS, null);
     }
 }
 
@@ -168,7 +189,7 @@ fn handleShortcut(hwnd: win32.HWND, state: *AppState.State, wparam: win32.WPARAM
                             grid,
                             true,
                         );
-                        if (result.paint) win32.invalidateHwnd(hwnd);
+                        if (result.paint) invalidateWithCells(hwnd);
                     }
                 },
             }
@@ -187,7 +208,7 @@ pub fn proc(
     if (msg >= WM_APP_CHILD_PROCESS_DATA and msg < WM_APP_CHILD_PROCESS_DATA + 100) {
         const tab_index = msg - WM_APP_CHILD_PROCESS_DATA;
         const payload: *pty.ReadPayload = @ptrFromInt(wparam);
-        defer std.heap.page_allocator.destroy(payload);
+        defer pty.releaseReadPayload(payload);
         if (global.state) |*state| {
             if (tab_index < state.tabs.items.len) {
                 if (state.tabs.items[tab_index]) |*tab| {
@@ -196,7 +217,7 @@ pub fn proc(
                             log.err("vt stream failed: {any}", .{e});
                         };
                         TerminalResizer.afterPtyOutput(global.term_arena.allocator(), tab);
-                        win32.invalidateHwnd(hwnd);
+                        schedulePtyPaint(hwnd);
                     }
                 }
             }
@@ -278,7 +299,7 @@ pub fn proc(
                         scrollbarDragTo(state, mouse_yf - track_height / 2.0, win_h, track_height);
                     }
                     _ = win32.SetCapture(hwnd);
-                    win32.invalidateHwnd(hwnd);
+                    invalidateWithCells(hwnd);
                 }
             } else {
                 const state = stateFromHwnd(hwnd);
@@ -316,7 +337,7 @@ pub fn proc(
                 .scrollbar_drag => {
                     global.mouse_capture = .none;
                     _ = win32.ReleaseCapture();
-                    win32.invalidateHwnd(hwnd);
+                    invalidateWithCells(hwnd);
                 },
                 .selecting => {
                     global.mouse_capture = .none;
@@ -334,6 +355,7 @@ pub fn proc(
                             clipboard.copyToClipboard(hwnd, text);
                         }
                         global.selection_fade = 1.0;
+                        markCellsDirty();
                         _ = win32.SetTimer(hwnd, TIMER_SELECTION_FADE, 16, null);
                     }
                 },
@@ -347,7 +369,7 @@ pub fn proc(
             const scroll_lines: isize = if (delta > 0) -3 else 3;
             const screen = state.activeTab().term.screens.active;
             screen.scroll(.{ .delta_row = scroll_lines });
-            win32.invalidateHwnd(hwnd);
+            invalidateWithCells(hwnd);
             return 0;
         },
         win32.WM_MOUSEMOVE => {
@@ -382,7 +404,7 @@ pub fn proc(
                     const min_track_height: f32 = 20.0;
                     const track_height = @max(min_track_height, @as(f32, @floatFromInt(sb.len)) / @as(f32, @floatFromInt(sb.total)) * win_h);
                     scrollbarDragTo(state, @as(f32, @floatFromInt(mouse_y)) - global.scrollbar_drag_offset, win_h, track_height);
-                    win32.invalidateHwnd(hwnd);
+                    invalidateWithCells(hwnd);
                 },
                 .selecting => {
                     const state = stateFromHwnd(hwnd);
@@ -395,7 +417,7 @@ pub fn proc(
                     if (screen.pages.pin(.{ .viewport = .{ .x = @intCast(col), .y = @intCast(row) } })) |pin| {
                         if (screen.selection) |*sel| {
                             sel.endPtr().* = pin;
-                            win32.invalidateHwnd(hwnd);
+                            invalidateWithCells(hwnd);
                         }
                     }
                 },
@@ -418,7 +440,7 @@ pub fn proc(
             return 0;
         },
         win32.WM_DISPLAYCHANGE => {
-            win32.invalidateHwnd(hwnd);
+            invalidateWithCells(hwnd);
             return 0;
         },
         win32.WM_SYSCOMMAND => {
@@ -428,13 +450,13 @@ pub fn proc(
         },
         win32.WM_EXITSIZEMOVE => {
             global.resizing = false;
-            win32.invalidateHwnd(hwnd);
+            invalidateWithCells(hwnd);
             return 0;
         },
         win32.WM_SIZING => {
             if (!global.resizing) {
                 global.resizing = true;
-                win32.invalidateHwnd(hwnd);
+                invalidateWithCells(hwnd);
             }
             const rect: *win32.RECT = @ptrFromInt(@as(usize, @bitCast(lparam)));
             const dpi = win32.dpiFromHwnd(hwnd);
@@ -485,7 +507,7 @@ pub fn proc(
                 grid,
                 notify_pty,
             );
-            if (result.paint) win32.invalidateHwnd(hwnd);
+            if (result.paint) invalidateWithCells(hwnd);
 
             return 0;
         },
@@ -509,6 +531,10 @@ pub fn proc(
                     -1;
             }
 
+            const rebuild_cells = global.cell_buffer_dirty or
+                global.resizing or
+                global.selection_fade > 0 or
+                global.mouse_capture == .selecting;
             global.renderer.render(
                 hwnd,
                 state.activeTab().term,
@@ -519,7 +545,9 @@ pub fn proc(
                 tab_count,
                 visible_active_idx,
                 visible_hover_idx,
+                rebuild_cells,
             );
+            global.cell_buffer_dirty = false;
             return 0;
         },
         win32.WM_GETDPISCALEDSIZE => {
@@ -549,7 +577,7 @@ pub fn proc(
             global.renderer.updateDpi(dpi);
             const rect: *win32.RECT = @ptrFromInt(@as(usize, @bitCast(lparam)));
             setWindowPosRect(hwnd, rect.*);
-            win32.invalidateHwnd(hwnd);
+            invalidateWithCells(hwnd);
             return 0;
         },
         win32.WM_KEYDOWN => {
@@ -564,12 +592,12 @@ pub fn proc(
                 screen.clearSelection();
                 global.selection_fade = 0;
                 _ = win32.KillTimer(hwnd, TIMER_SELECTION_FADE);
-                win32.invalidateHwnd(hwnd);
+                invalidateWithCells(hwnd);
             }
 
             if (!screen.viewportIsBottom()) {
                 screen.scroll(.active);
-                win32.invalidateHwnd(hwnd);
+                invalidateWithCells(hwnd);
             }
 
             var buf: [32]u8 = undefined;
@@ -587,7 +615,7 @@ pub fn proc(
             const screen = tab.term.screens.active;
             if (!screen.viewportIsBottom()) {
                 screen.scroll(.active);
-                win32.invalidateHwnd(hwnd);
+                invalidateWithCells(hwnd);
             }
             const char: u16 = std.math.cast(u16, wparam) orelse {
                 log.warn("unexpected WM_CHAR wparam: {any}", .{wparam});
@@ -627,7 +655,7 @@ pub fn proc(
                     const state = stateFromHwnd(hwnd);
                     state.activeTab().term.screens.active.clearSelection();
                 }
-                win32.invalidateHwnd(hwnd);
+                invalidateWithCells(hwnd);
             } else if (wparam == TIMER_CURSOR) {
                 if (!cursorAnimationEnabled()) {
                     _ = win32.KillTimer(hwnd, TIMER_CURSOR);
@@ -636,6 +664,10 @@ pub fn proc(
                 global.cursor_phase += CURSOR_TIMER_MS;
                 const total_ms = @as(f32, @floatFromInt(global.config.cursor.fade_in + global.config.cursor.fade_out));
                 if (total_ms > 0 and global.cursor_phase >= total_ms) global.cursor_phase -= total_ms;
+                win32.invalidateHwnd(hwnd);
+            } else if (wparam == TIMER_PTY_PAINT) {
+                global.pty_paint_pending = false;
+                _ = win32.KillTimer(hwnd, TIMER_PTY_PAINT);
                 win32.invalidateHwnd(hwnd);
             }
             return 0;

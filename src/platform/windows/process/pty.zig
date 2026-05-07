@@ -38,6 +38,51 @@ pub const ReadPayload = struct {
     data: [4096]u8,
 };
 
+const payload_pool_size = 256;
+
+const PayloadPool = struct {
+    mutex: std.Thread.Mutex = .{},
+    cond: std.Thread.Condition = .{},
+    used: [payload_pool_size]bool = [_]bool{false} ** payload_pool_size,
+    items: [payload_pool_size]ReadPayload = undefined,
+
+    fn acquire(self: *PayloadPool) *ReadPayload {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        while (true) {
+            for (&self.used, 0..) |*used, i| {
+                if (!used.*) {
+                    used.* = true;
+                    return &self.items[i];
+                }
+            }
+            self.cond.wait(&self.mutex);
+        }
+    }
+
+    fn release(self: *PayloadPool, payload: *ReadPayload) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        for (&self.items, 0..) |*item, i| {
+            if (item == payload) {
+                std.debug.assert(self.used[i]);
+                self.used[i] = false;
+                self.cond.signal();
+                return;
+            }
+        }
+        std.debug.panic("released payload outside PTY pool", .{});
+    }
+};
+
+var payload_pool: PayloadPool = .{};
+
+pub fn releaseReadPayload(payload: *ReadPayload) void {
+    payload_pool.release(payload);
+}
+
 const PipePair = struct {
     read: win32.HANDLE,
     write: win32.HANDLE,
@@ -277,7 +322,7 @@ pub const ChildProcess = struct {
     ) void {
         defer win32.closeHandle(read);
         while (true) {
-            const payload = std.heap.page_allocator.create(ReadPayload) catch break;
+            const payload = payload_pool.acquire();
             payload.generation = generation;
 
             var read_len: u32 = undefined;
@@ -289,13 +334,13 @@ pub const ChildProcess = struct {
                 null,
             )) {
                 const err = win32.GetLastError();
-                std.heap.page_allocator.destroy(payload);
+                releaseReadPayload(payload);
                 if (err == .ERROR_BROKEN_PIPE) break;
                 log.err("ReadFile failed: {any}", .{err});
                 break;
             }
             if (read_len == 0) {
-                std.heap.page_allocator.destroy(payload);
+                releaseReadPayload(payload);
                 break;
             }
             payload.len = read_len;
@@ -306,7 +351,7 @@ pub const ChildProcess = struct {
                 @intFromPtr(payload),
                 0,
             )) {
-                std.heap.page_allocator.destroy(payload);
+                releaseReadPayload(payload);
                 break;
             }
         }

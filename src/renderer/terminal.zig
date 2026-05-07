@@ -41,6 +41,9 @@ glyph_texture: Texture.GlyphTexture = .{},
 glyph_cache_arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator),
 glyph_cache: ?GlyphCache = null,
 glyph_cache_cell_size: ?types.CellXY = null,
+glyph_atlas_cell_count: ?types.CellXY = null,
+glyph_cache_misses: u64 = 0,
+glyph_miss_time_ns: u64 = 0,
 staging_texture: Texture.StagingTexture = .{},
 
 cell_size: win32.SIZE,
@@ -203,9 +206,13 @@ pub fn updateDpi(self: *D3d11Renderer, dpi: u32) void {
     }
     _ = self.glyph_cache_arena.reset(.free_all);
     self.glyph_cache_cell_size = null;
+    self.glyph_atlas_cell_count = null;
 }
 
 pub fn deinit(self: *D3d11Renderer) void {
+    if (self.glyph_cache_misses > 0) {
+        log.info("glyph cache misses={d}, miss_time_ns={d}", .{ self.glyph_cache_misses, self.glyph_miss_time_ns });
+    }
     self.staging_texture.release();
     if (self.glyph_cache) |*c| {
         c.deinit(self.glyph_cache_arena.allocator());
@@ -213,6 +220,7 @@ pub fn deinit(self: *D3d11Renderer) void {
     }
     _ = self.glyph_cache_arena.reset(.free_all);
     self.glyph_texture.release();
+    self.glyph_atlas_cell_count = null;
     self.shader_cells.release();
 
     self.context.ClearState();
@@ -248,6 +256,7 @@ pub fn render(
     tab_count: u32,
     active_tab_index: u32,
     tab_hover_index: i32,
+    rebuild_cells: bool,
 ) void {
     const sz = win32.getClientSize(hwnd);
     const client_w: u32 = @intCast(sz.cx);
@@ -297,7 +306,9 @@ pub fn render(
     const shader_col: u32 = term.cols;
     const shader_row: u32 = term.rows;
 
-    const grid_w: u32 = client_w -| @as(u32, @intCast(scrollbarWidth(win32.dpiFromHwnd(hwnd))));
+    const dpi = win32.dpiFromHwnd(hwnd);
+    const scrollbar_width = scrollbarWidth(dpi);
+    const grid_w: u32 = client_w -| @as(u32, @intCast(scrollbar_width));
 
     const screen = term.screens.active;
 
@@ -335,7 +346,7 @@ pub fn render(
         const show_scrollbar = sb.total > sb.len and (!screen.viewportIsBottom() or mouse_in_scrollbar);
         grid_config.scrollbar_x = @floatFromInt(grid_w);
         if (show_scrollbar) {
-            const sb_w: f32 = @floatFromInt(scrollbarWidth(win32.dpiFromHwnd(hwnd)));
+            const sb_w: f32 = @floatFromInt(scrollbar_width);
             const win_h: f32 = @floatFromInt(client_h);
             const min_track_height: f32 = 20.0;
             const track_height = @max(min_track_height, @as(f32, @floatFromInt(sb.len)) / @as(f32, @floatFromInt(sb.total)) * win_h);
@@ -361,7 +372,6 @@ pub fn render(
 
     // Build cell buffer from terminal state
     const cell_count = shader_col * shader_row;
-    const blank_glyph = self.generateGlyph(.{ .codepoint = ' ', .half = .single });
     const bg_rgba: types.Rgba8 = .{
         .r = @intCast((self.default_bg >> 16) & 0xFF),
         .g = @intCast((self.default_bg >> 8) & 0xFF),
@@ -369,11 +379,14 @@ pub fn render(
         .a = 0,
     };
 
+    const cell_buffer_size_changed = self.shader_cells.count != cell_count;
     self.shader_cells.updateCount(self.device, cell_count) catch |err| {
         log.err("failed to update shader cells: {any}", .{err});
         return;
     };
-    if (cell_count > 0) {
+    const rebuild_cell_buffer = rebuild_cells or cell_buffer_size_changed;
+    if (cell_count > 0 and rebuild_cell_buffer) {
+        const blank_glyph = self.generateGlyph(.{ .codepoint = ' ', .half = .single });
         var mapped: win32.D3D11_MAPPED_SUBRESOURCE = undefined;
         const hr = self.context.Map(
             &self.shader_cells.cell_buf.ID3D11Resource,
@@ -472,7 +485,7 @@ pub fn render(
                     }
                 } else {
                     cells_out[dst_row_offset + col] = .{
-                        .glyph_index = self.generateGlyph(.{ .codepoint = codepoint, .half = .single }),
+                        .glyph_index = glyphIndexOrBlank(self, codepoint, blank_glyph),
                         .background = bg,
                         .foreground = fg,
                     };
@@ -519,7 +532,7 @@ pub fn render(
                 var bx: u32 = box_x;
                 while (bx < box_x + box_w and bx < shader_col) : (bx += 1) {
                     cells_out[by * shader_col + bx] = .{
-                        .glyph_index = self.generateGlyph(.{ .codepoint = ' ', .half = .single }),
+                        .glyph_index = blank_glyph,
                         .background = overlay_bg,
                         .foreground = overlay_fg,
                     };
@@ -584,28 +597,8 @@ pub fn render(
 
 fn generateGlyph(self: *D3d11Renderer, key: GlyphCache.Key) u32 {
     const cs = self.cell_size_xy;
-    const tex_cell_count = getTextureMaxCellCount(cs);
+    const tex_cell_count = self.ensureGlyphAtlas() orelse return 0;
     const tex_total: u32 = @as(u32, tex_cell_count.x) * @as(u32, tex_cell_count.y);
-
-    const tex_pixel: types.CellXY = .{
-        .x = tex_cell_count.x * cs.x,
-        .y = tex_cell_count.y * cs.y,
-    };
-    const tex_retained = self.glyph_texture.updateSize(self.device, tex_pixel) catch |err| {
-        log.err("failed to update glyph texture size: {any}", .{err});
-        return 0;
-    };
-
-    const cache_valid = if (self.glyph_cache_cell_size) |s| s.eql(cs) else false;
-    self.glyph_cache_cell_size = cs;
-
-    if (!tex_retained or !cache_valid) {
-        if (self.glyph_cache) |*c| {
-            c.deinit(self.glyph_cache_arena.allocator());
-            _ = self.glyph_cache_arena.reset(.retain_capacity);
-            self.glyph_cache = null;
-        }
-    }
 
     const cache = blk: {
         if (self.glyph_cache) |*c| break :blk c;
@@ -624,6 +617,12 @@ fn generateGlyph(self: *D3d11Renderer, key: GlyphCache.Key) u32 {
         return 0;
     }) {
         .newly_reserved => |reserved| {
+            const miss_start_ns = std.time.nanoTimestamp();
+            defer {
+                self.glyph_cache_misses += 1;
+                const elapsed = std.time.nanoTimestamp() - miss_start_ns;
+                if (elapsed > 0) self.glyph_miss_time_ns += @intCast(elapsed);
+            }
             const pos = cellPosFromIndex(reserved.index, tex_cell_count.x);
             const coord: types.CellXY = .{ .x = cs.x * pos.x, .y = cs.y * pos.y };
 
@@ -735,6 +734,48 @@ fn generateGlyph(self: *D3d11Renderer, key: GlyphCache.Key) u32 {
         },
         .already_reserved => |index| return index,
     }
+}
+
+pub fn prewarmAsciiGlyphs(self: *D3d11Renderer) void {
+    var codepoint: u21 = 0x20;
+    while (codepoint <= 0x7e) : (codepoint += 1) {
+        _ = self.generateGlyph(.{ .codepoint = codepoint, .half = .single });
+    }
+}
+
+fn ensureGlyphAtlas(self: *D3d11Renderer) ?types.CellXY {
+    const cs = self.cell_size_xy;
+    const cache_valid = if (self.glyph_cache_cell_size) |s| s.eql(cs) else false;
+    if (cache_valid) {
+        if (self.glyph_atlas_cell_count) |cell_count| return cell_count;
+    }
+
+    const tex_cell_count = getTextureMaxCellCount(cs);
+    const tex_pixel: types.CellXY = .{
+        .x = tex_cell_count.x * cs.x,
+        .y = tex_cell_count.y * cs.y,
+    };
+    const tex_retained = self.glyph_texture.updateSize(self.device, tex_pixel) catch |err| {
+        log.err("failed to update glyph texture size: {any}", .{err});
+        return null;
+    };
+
+    if (!tex_retained or !cache_valid) {
+        if (self.glyph_cache) |*c| {
+            c.deinit(self.glyph_cache_arena.allocator());
+            _ = self.glyph_cache_arena.reset(.retain_capacity);
+            self.glyph_cache = null;
+        }
+    }
+
+    self.glyph_cache_cell_size = cs;
+    self.glyph_atlas_cell_count = tex_cell_count;
+    return tex_cell_count;
+}
+
+fn glyphIndexOrBlank(self: *D3d11Renderer, codepoint: u21, blank_glyph: u32) u32 {
+    if (codepoint == ' ') return blank_glyph;
+    return self.generateGlyph(.{ .codepoint = codepoint, .half = .single });
 }
 
 // --- Swap chain ---

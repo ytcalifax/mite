@@ -127,11 +127,8 @@ fn resizeActiveTab(hwnd: win32.HWND, state: *AppState.State, grid: pty.GridPos, 
     const pty_same_size = grid.col == tab.pty_grid.col and grid.row == tab.pty_grid.row;
     if (term_same_size and (!notify_pty or pty_same_size)) return;
 
-    var active_screen = tab.term.screens.active;
-    active_screen.scroll(.active);
-
     if (!term_same_size) {
-        tab.term.resize(global.term_arena.allocator(), grid.col, grid.row) catch |err| {
+        resizeTerminalForGrid(tab, grid) catch |err| {
             log.err("Terminal resize failed: {any}", .{err});
             return;
         };
@@ -147,8 +144,98 @@ fn resizeActiveTab(hwnd: win32.HWND, state: *AppState.State, grid: pty.GridPos, 
         if (pty_resized) tab.pty_grid = grid;
     }
 
-    active_screen.scroll(.active);
     win32.invalidateHwnd(hwnd);
+}
+
+fn resizeTerminalForGrid(tab: *AppState.Tab, grid: pty.GridPos) !void {
+    if (tab.term.screens.active_key == .alternate) {
+        tab.deferred_primary_grid = grid;
+        try resizeTerminalShell(tab, grid, false);
+    } else {
+        try resizeTerminalShell(tab, grid, true);
+        tab.deferred_primary_grid = null;
+    }
+}
+
+fn resizeTerminalShell(tab: *AppState.Tab, grid: pty.GridPos, resize_primary: bool) !void {
+    const was_at_bottom = tab.term.screens.active.viewportIsBottom();
+    if (was_at_bottom) tab.term.screens.active.scroll(.active);
+
+    if (tab.term.cols != grid.col) {
+        tab.term.tabstops.deinit(global.term_arena.allocator());
+        tab.term.tabstops = try @TypeOf(tab.term.tabstops).init(global.term_arena.allocator(), grid.col, 8);
+    }
+
+    if (resize_primary) {
+        const primary = tab.term.screens.get(.primary).?;
+        try primary.resize(.{
+            .cols = grid.col,
+            .rows = grid.row,
+            .reflow = tab.term.modes.get(.wraparound),
+            .prompt_redraw = tab.term.flags.shell_redraws_prompt,
+        });
+    }
+
+    if (tab.term.screens.get(.alternate)) |alt| {
+        try alt.resize(.{
+            .cols = grid.col,
+            .rows = grid.row,
+            .reflow = false,
+        });
+    }
+
+    tab.term.cols = grid.col;
+    tab.term.rows = grid.row;
+    tab.term.scrolling_region = .{
+        .top = 0,
+        .bottom = grid.row - 1,
+        .left = 0,
+        .right = grid.col - 1,
+    };
+    tab.term.flags.dirty.clear = true;
+
+    if (was_at_bottom) tab.term.screens.active.scroll(.active);
+}
+
+fn applyDeferredPrimaryResize(tab: *AppState.Tab) void {
+    if (tab.term.screens.active_key != .primary) return;
+    const grid = tab.deferred_primary_grid orelse return;
+    tab.deferred_primary_grid = null;
+
+    const primary = tab.term.screens.get(.primary).?;
+    if (primary.pages.cols == grid.col and primary.pages.rows == grid.row) return;
+
+    const was_at_bottom = primary.viewportIsBottom();
+    if (was_at_bottom) primary.scroll(.active);
+    primary.resize(.{
+        .cols = grid.col,
+        .rows = grid.row,
+        .reflow = tab.term.modes.get(.wraparound),
+        .prompt_redraw = tab.term.flags.shell_redraws_prompt,
+    }) catch |err| {
+        log.err("deferred primary resize failed: {any}", .{err});
+        return;
+    };
+    if (was_at_bottom) primary.scroll(.active);
+}
+
+fn syncPtyToTerminalGrid(tab: *AppState.Tab) void {
+    const grid: pty.GridPos = .{
+        .col = @intCast(tab.term.cols),
+        .row = @intCast(tab.term.rows),
+    };
+    if (grid.col == tab.pty_grid.col and grid.row == tab.pty_grid.row) return;
+
+    var out_err: pty.Error = undefined;
+    tab.child_process.resize(&out_err, grid) catch {
+        log.err("PTY resize failed: {s}", .{out_err.what});
+        return;
+    };
+    tab.pty_grid = grid;
+}
+
+fn tabNeedsImmediatePtyResize(tab: *const AppState.Tab) bool {
+    return tab.term.screens.active_key == .alternate;
 }
 
 fn flushMessages() void {
@@ -280,8 +367,9 @@ fn handleShortcut(hwnd: win32.HWND, state: *AppState.State, wparam: win32.WPARAM
                 .paste => pasteClipboard(hwnd, state),
                 .fullscreen => {
                     const was_fullscreen = window.isFullscreen(hwnd);
-                    global.resize_reflow_suppressed = true;
-                    global.fullscreen_resize_reflow_suppressed = true;
+                    const immediate_pty_resize = tabNeedsImmediatePtyResize(state.activeTab());
+                    global.resize_reflow_suppressed = !immediate_pty_resize;
+                    global.fullscreen_resize_reflow_suppressed = !immediate_pty_resize;
                     window.toggleFullscreen(hwnd, state);
                     if (was_fullscreen) {
                         global.fullscreen_resize_reflow_suppressed = false;
@@ -500,17 +588,17 @@ fn WndProc(
 ) callconv(.winapi) win32.LRESULT {
     if (msg >= WM_APP_CHILD_PROCESS_DATA and msg < WM_APP_CHILD_PROCESS_DATA + 100) {
         const tab_index = msg - WM_APP_CHILD_PROCESS_DATA;
-        const buffer: [*]const u8 = @ptrFromInt(wparam);
-        const payload: usize = @bitCast(lparam);
-        const len = payload & 0xffff_ffff;
-        const generation: u32 = @truncate(payload >> 32);
+        const payload: *pty.ReadPayload = @ptrFromInt(wparam);
+        defer std.heap.page_allocator.destroy(payload);
         if (global.state) |*state| {
             if (tab_index < state.tabs.items.len) {
                 if (state.tabs.items[tab_index]) |*tab| {
-                    if (tab.generation == generation) {
-                        tab.vt_stream.nextSlice(buffer[0..len]) catch |e| {
+                    if (tab.generation == payload.generation) {
+                        tab.vt_stream.nextSlice(payload.data[0..payload.len]) catch |e| {
                             log.err("vt stream failed: {any}", .{e});
                         };
+                        applyDeferredPrimaryResize(tab);
+                        if (tabNeedsImmediatePtyResize(tab)) syncPtyToTerminalGrid(tab);
                         win32.invalidateHwnd(hwnd);
                     }
                 }
@@ -796,7 +884,12 @@ fn WndProc(
                 win32.GetDpiForWindow(hwnd),
             );
 
-            const notify_pty = if (global.fullscreen_resize_reflow_suppressed) false else switch (wparam) {
+            const immediate_pty_resize = tabNeedsImmediatePtyResize(state.activeTab());
+            const notify_pty = if (immediate_pty_resize)
+                true
+            else if (global.fullscreen_resize_reflow_suppressed)
+                false
+            else switch (wparam) {
                 win32.SIZE_MAXIMIZED => blk: {
                     global.resize_reflow_suppressed = true;
                     break :blk false;

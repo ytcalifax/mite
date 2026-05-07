@@ -32,6 +32,12 @@ pub const Error = struct {
     };
 };
 
+pub const ReadPayload = struct {
+    generation: u32,
+    len: u32,
+    data: [4096]u8,
+};
+
 pub const ChildProcess = struct {
     pty: ?Pty,
     job: win32.HANDLE,
@@ -56,7 +62,7 @@ pub const ChildProcess = struct {
         command_line: ?[*:0]u16,
         hwnd: win32.HWND,
         hwnd_msg: u32,
-        hwnd_msg_result: win32.LRESULT,
+        _: win32.LRESULT,
         generation: u32,
         cell_count: GridPos,
     ) error{Error}!ChildProcess {
@@ -91,7 +97,7 @@ pub const ChildProcess = struct {
         const thread = std.Thread.spawn(
             .{},
             readConsoleThread,
-            .{ hwnd, hwnd_msg, hwnd_msg_result, generation, our_read },
+            .{ hwnd, hwnd_msg, generation, our_read },
         ) catch |e| return out_err.setZig("CreateReadConsoleThread", e);
         thread.detach();
         our_read_owned_by_thread = true;
@@ -251,7 +257,6 @@ pub const ChildProcess = struct {
     fn readConsoleThread(
         hwnd: win32.HWND,
         hwnd_msg: u32,
-        hwnd_msg_result: win32.LRESULT,
         generation: u32,
         read: win32.HANDLE,
     ) void {
@@ -272,13 +277,20 @@ pub const ChildProcess = struct {
                 break;
             }
             if (read_len == 0) break;
-            const payload = (@as(usize, generation) << 32) | @as(usize, read_len);
-            if (hwnd_msg_result != win32.SendMessageW(
+            const payload = std.heap.page_allocator.create(ReadPayload) catch break;
+            payload.generation = generation;
+            payload.len = read_len;
+            @memcpy(payload.data[0..read_len], buffer[0..read_len]);
+
+            if (0 == win32.PostMessageW(
                 hwnd,
                 hwnd_msg,
-                @intFromPtr(&buffer),
-                @bitCast(payload),
-            )) break;
+                @intFromPtr(payload),
+                0,
+            )) {
+                std.heap.page_allocator.destroy(payload);
+                break;
+            }
         }
     }
 };

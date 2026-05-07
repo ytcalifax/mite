@@ -71,7 +71,7 @@ pub const Config = struct {
                     \\    "cursor": "0xffffff"
                     \\  },
                     \\  "cursor": {
-                    \\    "style": "block",
+                    \\    "style": "pipe",
                     \\    "blink": true,
                     \\    "fade_in": 400,
                     \\    "fade_out": 400

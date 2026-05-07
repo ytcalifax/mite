@@ -13,6 +13,7 @@ pub const Tab = struct {
     child_process: pty.ChildProcess,
     term: *gvt.Terminal,
     pty_grid: pty.GridPos,
+    deferred_primary_grid: ?pty.GridPos = null,
     generation: u32,
     vt_stream: VtHandler.VtStream(VtHandler.MiteHandler),
     title: []const u8,

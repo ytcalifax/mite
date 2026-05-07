@@ -6,12 +6,20 @@ pub const CursorStyle = enum {
     pipe,
 };
 
+pub const SwitcherLocation = enum {
+    top_left,
+    top_right,
+    bottom_left,
+    bottom_right,
+};
+
 pub const Config = struct {
     font: Font = .{},
     colors: Colors = .{},
     cursor: Cursor = .{},
     shell: Shell = .{},
     window: Window = .{},
+    tabs: Tabs = .{},
 
     pub const Font = struct {
         size: f32 = 14.0,
@@ -38,6 +46,10 @@ pub const Config = struct {
 
     pub const Window = struct {
         opacity: f32 = 0.94,
+    };
+
+    pub const Tabs = struct {
+        switcher_location: SwitcherLocation = .top_right,
     };
 
     pub fn load(allocator: std.mem.Allocator) !Config {
@@ -82,6 +94,9 @@ pub const Config = struct {
                     \\  },
                     \\  "window": {
                     \\    "opacity": 0.94
+                    \\  },
+                    \\  "tabs": {
+                    \\    "switcher_location": "top_right"
                     \\  }
                     \\}
                 ;

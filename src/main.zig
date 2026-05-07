@@ -69,8 +69,38 @@ fn activateTab(state: *AppState.State, index: usize) void {
     win32.invalidateHwnd(state.hwnd);
 }
 
+const TabSwitcherBounds = struct {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+};
+
+fn tabSwitcherBounds(client_size: win32.SIZE, grid_w: i32, tab_count_visual: u32) TabSwitcherBounds {
+    const tab_w: f32 = 16.0;
+    const spacing: f32 = 8.0;
+    const margin: f32 = 8.0;
+    const height: f32 = 30.0;
+    const width = tab_w * @as(f32, @floatFromInt(tab_count_visual)) + spacing * @as(f32, @floatFromInt(tab_count_visual - 1));
+
+    const x = switch (global.config.tabs.switcher_location) {
+        .top_left, .bottom_left => margin,
+        .top_right, .bottom_right => @as(f32, @floatFromInt(grid_w)) - width - margin,
+    };
+    const y = switch (global.config.tabs.switcher_location) {
+        .top_left, .top_right => 0.0,
+        .bottom_left, .bottom_right => @max(0.0, @as(f32, @floatFromInt(client_size.cy)) - height),
+    };
+
+    return .{
+        .x = x,
+        .y = y,
+        .width = width,
+        .height = height,
+    };
+}
+
 fn getTabAtMouse(hwnd: win32.HWND, x: i32, y: i32) i32 {
-    if (y < 0 or y >= 30) return -1;
     const state = stateFromHwnd(hwnd);
 
     var tab_count_real: u32 = 0;
@@ -82,14 +112,15 @@ fn getTabAtMouse(hwnd: win32.HWND, x: i32, y: i32) i32 {
     const client_size = win32.getClientSize(hwnd);
     const sb_px = TerminalRenderer.scrollbarWidth(win32.dpiFromHwnd(hwnd));
     const grid_w = client_size.cx -| @as(i32, @intCast(sb_px));
+    const bounds = tabSwitcherBounds(client_size, grid_w, tab_count_visual);
 
     const tab_w: f32 = 16.0;
     const spacing: f32 = 8.0;
-    const tab_area_width = tab_w * @as(f32, @floatFromInt(tab_count_visual)) + spacing * @as(f32, @floatFromInt(tab_count_visual - 1));
-    const tab_start_x = @as(f32, @floatFromInt(grid_w)) - tab_area_width - 8.0;
+    const xf: f32 = @floatFromInt(x);
+    const yf: f32 = @floatFromInt(y);
 
-    if (@as(f32, @floatFromInt(x)) >= tab_start_x and @as(f32, @floatFromInt(x)) < @as(f32, @floatFromInt(grid_w)) - 8.0) {
-        const local_x = @as(f32, @floatFromInt(x)) - tab_start_x;
+    if (xf >= bounds.x and xf < bounds.x + bounds.width and yf >= bounds.y and yf < bounds.y + bounds.height) {
+        const local_x = xf - bounds.x;
         const visual_tab_idx = @as(i32, @intFromFloat(local_x / (tab_w + spacing)));
         const x_in_tab = fmod(local_x, (tab_w + spacing));
         if (visual_tab_idx >= 0 and visual_tab_idx < @as(i32, @intCast(tab_count_visual)) and x_in_tab < tab_w) {

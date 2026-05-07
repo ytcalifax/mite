@@ -18,7 +18,9 @@ cbuffer GridConfig : register(b0)
     uint tab_count;
     uint active_tab_index;
     int tab_hover_index;
-    uint padding;
+    uint tab_position;
+    uint viewport_height;
+    uint3 padding;
 }
 
 struct Cell
@@ -66,12 +68,17 @@ float4 PixelMain(float4 sv_pos : SV_POSITION) : SV_TARGET {
     dynamic_bg += noise;
 
     // 3. Tabs (Bookmarks) rendering
-    if (sv_pos.y < 30) {
+    bool tabs_on_left = (tab_position == 0 || tab_position == 2);
+    bool tabs_on_bottom = (tab_position == 2 || tab_position == 3);
+    float tab_area_y = tabs_on_bottom ? max(0.0, (float)viewport_height - 30.0) : 0.0;
+
+    if (sv_pos.y >= tab_area_y && sv_pos.y < tab_area_y + 30.0) {
         float tab_w = 16.0;
         float spacing = 8.0;
         float total_tabs = tab_count + 1.0;
         float tab_area_width = tab_w * total_tabs + spacing * (total_tabs - 1.0);
-        float tab_start_x = scrollbar_x - tab_area_width - 8.0;
+        float tab_start_x = tabs_on_left ? 8.0 : scrollbar_x - tab_area_width - 8.0;
+        float tab_local_y = tabs_on_bottom ? ((float)viewport_height - sv_pos.y) : (sv_pos.y - tab_area_y);
         
         if (sv_pos.x >= tab_start_x && sv_pos.x < scrollbar_x - 8.0) {
             float local_x = sv_pos.x - tab_start_x;
@@ -83,7 +90,7 @@ float4 PixelMain(float4 sv_pos : SV_POSITION) : SV_TARGET {
                 bool active = !is_plus && (tab_idx == active_tab_index);
                 float tab_height = active ? 24.0 : 16.0;
                 
-                if (sv_pos.y < tab_height) {
+                if (tab_local_y < tab_height) {
                     float3 tab_color = active ? float3(1.0, 0.72, 0.0) : lerp(dynamic_bg, float3(1,1,1), 0.2);
                     if (tab_idx == (uint)tab_hover_index) {
                         tab_color = lerp(tab_color, float3(1,1,1), 0.1);
@@ -91,7 +98,7 @@ float4 PixelMain(float4 sv_pos : SV_POSITION) : SV_TARGET {
                     
                     if (is_plus) {
                         float2 center = float2(tab_w / 2.0, 16.0 / 2.0);
-                        float2 p = float2(x_in_tab, sv_pos.y) - center;
+                        float2 p = float2(x_in_tab, tab_local_y) - center;
                         if ((abs(p.x) < 1.0 && abs(p.y) < 4.0) || (abs(p.y) < 1.0 && abs(p.x) < 4.0)) {
                             tab_color = float3(1,1,1);
                         }

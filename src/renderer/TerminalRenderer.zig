@@ -345,7 +345,9 @@ pub fn render(
         grid_config.tab_count = tab_count;
         grid_config.active_tab_index = active_tab_index;
         grid_config.tab_hover_index = tab_hover_index;
-        grid_config.padding = 0;
+        grid_config.tab_position = @intFromEnum(self.config.tabs.switcher_location);
+        grid_config.viewport_height = client_h;
+        grid_config.padding = .{ 0, 0, 0 };
     }
 
     // Build cell buffer from terminal state

@@ -25,7 +25,7 @@ const TIMER_SELECTION_FADE = 2;
 
 const MIN_COLS = 40;
 const MIN_ROWS = 10;
-const MAX_COLS = 160;
+const MAX_COLS = 1000;
 const MAX_ROWS = 1000;
 
 const global = struct {

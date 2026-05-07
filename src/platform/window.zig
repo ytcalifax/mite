@@ -68,6 +68,12 @@ pub fn applyWindowTheme(hwnd: win32.HWND, config: Config) void {
     _ = win32.DwmExtendFrameIntoClientArea(hwnd, &margins);
 }
 
+pub fn isFullscreen(hwnd: win32.HWND) bool {
+    const style = win32.GetWindowLongW(hwnd, win32.GWL_STYLE);
+    const overlapped_window_style = @as(i32, @bitCast(win32.WS_OVERLAPPEDWINDOW));
+    return (style & overlapped_window_style) == 0;
+}
+
 pub fn toggleFullscreen(hwnd: win32.HWND, state: *AppState.State) void {
     const style = win32.GetWindowLongW(hwnd, win32.GWL_STYLE);
     const overlapped_window_style = @as(i32, @bitCast(win32.WS_OVERLAPPEDWINDOW));

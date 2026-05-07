@@ -12,6 +12,7 @@ pub const WindowBounds = struct {
 pub const Tab = struct {
     child_process: pty.ChildProcess,
     term: *gvt.Terminal,
+    pty_grid: pty.GridPos,
     vt_stream: VtHandler.VtStream(VtHandler.MiteHandler),
     title: []const u8,
     arena: *std.heap.ArenaAllocator,

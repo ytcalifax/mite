@@ -39,6 +39,7 @@ const global = struct {
     var resizing: bool = false;
     var resize_reflow_suppressed: bool = false;
     var fullscreen_resize_reflow_suppressed: bool = false;
+    var suppress_next_restored_resize: bool = false;
     var high_surrogate: ?u16 = null;
     var cursor_phase: f32 = 0.0;
     var mouse_in_scrollbar: bool = false;
@@ -349,6 +350,10 @@ fn createTab(state: *AppState.State, grid: pty.GridPos) !void {
     };
 
     var err: pty.Error = undefined;
+    const generation = state.next_tab_generation;
+    state.next_tab_generation +%= 1;
+    if (state.next_tab_generation == 0) state.next_tab_generation = 1;
+
     const child_process = pty.ChildProcess.startConPtyWin32(
         &err,
         arena.allocator(),
@@ -357,6 +362,7 @@ fn createTab(state: *AppState.State, grid: pty.GridPos) !void {
         state.hwnd,
         WM_APP_CHILD_PROCESS_DATA + @as(u32, @intCast(tab_index)),
         WM_APP_CHILD_PROCESS_DATA_RESULT,
+        generation,
         grid,
     ) catch |e| {
         log.err("ChildProcess.startConPtyWin32 failed: {any} - {s}", .{ e, err.what });
@@ -376,6 +382,7 @@ fn createTab(state: *AppState.State, grid: pty.GridPos) !void {
         .child_process = child_process,
         .term = term,
         .pty_grid = grid,
+        .generation = generation,
         .vt_stream = VtHandler.VtStream(VtHandler.MiteHandler).initAlloc(global.gpa.allocator(), VtHandler.MiteHandler{
             .inner = term.vtHandler(),
             .hwnd = state.hwnd,
@@ -393,43 +400,66 @@ fn createTab(state: *AppState.State, grid: pty.GridPos) !void {
     state.active_tab_index = tab_index;
 }
 
-fn closeTab(state: *AppState.State, index: usize) void {
+fn tabCount(state: *const AppState.State) usize {
     var tab_count: usize = 0;
     for (state.tabs.items) |maybe_tab| {
         if (maybe_tab != null) tab_count += 1;
     }
-    if (tab_count <= 1) return;
+    return tab_count;
+}
+
+fn selectReplacementTab(state: *AppState.State, index: usize) void {
+    if (state.active_tab_index != index) return;
+
+    for (index..state.tabs.items.len) |i| {
+        if (state.tabs.items[i] != null) {
+            state.active_tab_index = i;
+            return;
+        }
+    }
+
+    var i: usize = index;
+    while (i > 0) {
+        i -= 1;
+        if (state.tabs.items[i] != null) {
+            state.active_tab_index = i;
+            return;
+        }
+    }
+}
+
+fn destroyTab(state: *AppState.State, index: usize, terminate: bool, allow_empty: bool) void {
+    if (index >= state.tabs.items.len or state.tabs.items[index] == null) return;
+    if (!allow_empty and tabCount(state) <= 1) return;
 
     if (state.tabs.items[index]) |*tab| {
-        _ = win32.TerminateProcess(tab.child_process.process_handle, 0);
+        tab.child_process.deinit(terminate);
         tab.arena.deinit();
         global.gpa.allocator().destroy(tab.arena);
         state.tabs.items[index] = null;
     }
 
-    if (state.active_tab_index == index) {
-        // Find next available tab
-        var found = false;
-        for (index..state.tabs.items.len) |i| {
-            if (state.tabs.items[i] != null) {
-                state.active_tab_index = i;
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            var i: usize = index;
-            while (i > 0) {
-                i -= 1;
-                if (state.tabs.items[i] != null) {
-                    state.active_tab_index = i;
-                    found = true;
-                    break;
-                }
-            }
-        }
+    if (tabCount(state) == 0) {
+        win32.PostQuitMessage(0);
+    } else {
+        selectReplacementTab(state, index);
+        win32.invalidateHwnd(state.hwnd);
     }
-    win32.invalidateHwnd(state.hwnd);
+}
+
+fn closeTab(state: *AppState.State, index: usize) void {
+    destroyTab(state, index, true, false);
+}
+
+fn closeAllTabs(state: *AppState.State) void {
+    var i: usize = 0;
+    while (i < state.tabs.items.len) : (i += 1) {
+        destroyTab(state, i, true, true);
+    }
+}
+
+fn handleExitedTab(state: *AppState.State, index: usize) void {
+    destroyTab(state, index, false, true);
 }
 
 fn WndProc(
@@ -441,14 +471,18 @@ fn WndProc(
     if (msg >= WM_APP_CHILD_PROCESS_DATA and msg < WM_APP_CHILD_PROCESS_DATA + 100) {
         const tab_index = msg - WM_APP_CHILD_PROCESS_DATA;
         const buffer: [*]const u8 = @ptrFromInt(wparam);
-        const len: usize = @bitCast(lparam);
+        const payload: usize = @bitCast(lparam);
+        const len = payload & 0xffff_ffff;
+        const generation: u32 = @truncate(payload >> 32);
         if (global.state) |*state| {
             if (tab_index < state.tabs.items.len) {
                 if (state.tabs.items[tab_index]) |*tab| {
-                    tab.vt_stream.nextSlice(buffer[0..len]) catch |e| {
-                        log.err("vt stream failed: {any}", .{e});
-                    };
-                    win32.invalidateHwnd(hwnd);
+                    if (tab.generation == generation) {
+                        tab.vt_stream.nextSlice(buffer[0..len]) catch |e| {
+                            log.err("vt stream failed: {any}", .{e});
+                        };
+                        win32.invalidateHwnd(hwnd);
+                    }
                 }
             }
         }
@@ -480,7 +514,12 @@ fn WndProc(
 
             return 0;
         },
-        win32.WM_CLOSE, win32.WM_DESTROY => {
+        win32.WM_CLOSE => {
+            _ = win32.DestroyWindow(hwnd);
+            return 0;
+        },
+        win32.WM_DESTROY => {
+            if (global.state) |*state| closeAllTabs(state);
             win32.PostQuitMessage(0);
             return 0;
         },
@@ -733,6 +772,11 @@ fn WndProc(
                     break :blk false;
                 },
                 win32.SIZE_RESTORED => blk: {
+                    if (global.suppress_next_restored_resize) {
+                        global.suppress_next_restored_resize = false;
+                        global.resize_reflow_suppressed = false;
+                        break :blk false;
+                    }
                     global.resize_reflow_suppressed = false;
                     break :blk true;
                 },
@@ -813,6 +857,8 @@ fn WndProc(
             return 1;
         },
         win32.WM_DPICHANGED => {
+            global.resize_reflow_suppressed = true;
+            global.suppress_next_restored_resize = true;
             const dpi = win32.hiword(wparam);
             global.renderer.updateDpi(dpi);
             const rect: *win32.RECT = @ptrFromInt(@as(usize, @bitCast(lparam)));
@@ -1079,9 +1125,23 @@ pub fn main() !void {
             break :blk &global.state.?;
         };
 
-        var handles = [1]win32.HANDLE{state.activeTab().child_process.process_handle};
-        const wait_result = win32.MsgWaitForMultipleObjectsEx(1, &handles, win32.INFINITE, win32.QS_ALLINPUT, .{ .ALERTABLE = 1, .INPUTAVAILABLE = 1 });
-        if (wait_result == 0) win32.ExitProcess(0);
+        var handles: [100]win32.HANDLE = undefined;
+        var tab_indices: [100]usize = undefined;
+        var handle_count: u32 = 0;
+        for (state.tabs.items, 0..) |maybe_tab, i| {
+            if (maybe_tab) |tab| {
+                handles[handle_count] = tab.child_process.process_handle;
+                tab_indices[handle_count] = i;
+                handle_count += 1;
+            }
+        }
+
+        const wait_result = win32.MsgWaitForMultipleObjectsEx(handle_count, &handles, win32.INFINITE, win32.QS_ALLINPUT, .{ .ALERTABLE = 1, .INPUTAVAILABLE = 1 });
+        if (wait_result < handle_count) {
+            handleExitedTab(state, tab_indices[wait_result]);
+        } else if (wait_result == 0xffff_ffff) {
+            log.err("MsgWaitForMultipleObjectsEx failed: {any}", .{win32.GetLastError()});
+        }
 
         flushMessages();
     }

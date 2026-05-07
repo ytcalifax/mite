@@ -13,6 +13,7 @@ pub const Tab = struct {
     child_process: pty.ChildProcess,
     term: *gvt.Terminal,
     pty_grid: pty.GridPos,
+    generation: u32,
     vt_stream: VtHandler.VtStream(VtHandler.MiteHandler),
     title: []const u8,
     arena: *std.heap.ArenaAllocator,
@@ -22,6 +23,7 @@ pub const State = struct {
     hwnd: win32.HWND,
     tabs: std.ArrayList(?Tab),
     active_tab_index: usize,
+    next_tab_generation: u32 = 1,
     bounds: ?WindowBounds = null,
     previous_placement: win32.WINDOWPLACEMENT = undefined,
 

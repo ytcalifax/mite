@@ -34,8 +34,6 @@ pub const Error = struct {
 
 pub const ChildProcess = struct {
     pty: ?Pty,
-    read: win32.HANDLE,
-    thread: std.Thread,
     job: win32.HANDLE,
     process_handle: win32.HANDLE,
 
@@ -59,6 +57,7 @@ pub const ChildProcess = struct {
         hwnd: win32.HWND,
         hwnd_msg: u32,
         hwnd_msg_result: win32.LRESULT,
+        generation: u32,
         cell_count: GridPos,
     ) error{Error}!ChildProcess {
         var sec_attr: win32.SECURITY_ATTRIBUTES = .{
@@ -83,6 +82,8 @@ pub const ChildProcess = struct {
             "CreateOutputPipe",
             win32.GetLastError(),
         );
+        var our_read_owned_by_thread = false;
+        errdefer if (!our_read_owned_by_thread) win32.closeHandle(our_read);
 
         try setInherit(out_err, our_write, false);
         try setInherit(out_err, our_read, false);
@@ -90,8 +91,10 @@ pub const ChildProcess = struct {
         const thread = std.Thread.spawn(
             .{},
             readConsoleThread,
-            .{ hwnd, hwnd_msg, hwnd_msg_result, our_read },
+            .{ hwnd, hwnd_msg, hwnd_msg_result, generation, our_read },
         ) catch |e| return out_err.setZig("CreateReadConsoleThread", e);
+        thread.detach();
+        our_read_owned_by_thread = true;
 
         var hpcon: win32.HPCON = undefined;
         {
@@ -210,11 +213,19 @@ pub const ChildProcess = struct {
                 .write = .{ .handle = our_write },
                 .hpcon = hpcon,
             },
-            .read = our_read,
-            .thread = thread,
             .job = job,
             .process_handle = process_info.hProcess.?,
         };
+    }
+
+    pub fn deinit(self: *ChildProcess, terminate: bool) void {
+        if (terminate) _ = win32.TerminateProcess(self.process_handle, 0);
+        if (self.pty) |*child_pty| {
+            child_pty.deinit();
+            self.pty = null;
+        }
+        win32.closeHandle(self.job);
+        win32.closeHandle(self.process_handle);
     }
 
     pub fn resize(self: *const ChildProcess, out_err: *Error, size: GridPos) error{Error}!void {
@@ -241,8 +252,10 @@ pub const ChildProcess = struct {
         hwnd: win32.HWND,
         hwnd_msg: u32,
         hwnd_msg_result: win32.LRESULT,
+        generation: u32,
         read: win32.HANDLE,
     ) void {
+        defer win32.closeHandle(read);
         while (true) {
             var buffer: [4096]u8 = undefined;
             var read_len: u32 = undefined;
@@ -259,11 +272,12 @@ pub const ChildProcess = struct {
                 break;
             }
             if (read_len == 0) break;
+            const payload = (@as(usize, generation) << 32) | @as(usize, read_len);
             if (hwnd_msg_result != win32.SendMessageW(
                 hwnd,
                 hwnd_msg,
                 @intFromPtr(&buffer),
-                read_len,
+                @bitCast(payload),
             )) break;
         }
     }

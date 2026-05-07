@@ -28,13 +28,14 @@ pub const GlyphTexture = struct {
         var obj: *win32.ID3D11Texture2D = undefined;
         const hr = device.CreateTexture2D(&desc, null, &obj);
         if (hr < 0) return error.CreateGlyphTextureFailed;
-        self.obj = obj;
+        errdefer _ = obj.IUnknown.Release();
 
         var view: *win32.ID3D11ShaderResourceView = undefined;
         const hr2 = device.CreateShaderResourceView(&obj.ID3D11Resource, null, &view);
         if (hr2 < 0) return error.CreateGlyphViewFailed;
-        self.view = view;
 
+        self.obj = obj;
+        self.view = view;
         self.size = size;
         return false;
     }
@@ -85,6 +86,7 @@ pub const StagingTexture = struct {
             const hr = device.CreateTexture2D(&desc, null, &texture);
             if (hr < 0) return error.CreateStagingTextureFailed;
         }
+        errdefer _ = texture.IUnknown.Release();
 
         const dxgi_surface = try queryInterface(texture, win32.IDXGISurface);
         defer _ = dxgi_surface.IUnknown.Release();
@@ -102,8 +104,8 @@ pub const StagingTexture = struct {
             const hr = d2d_factory.CreateDxgiSurfaceRenderTarget(dxgi_surface, &props, &render_target);
             if (hr < 0) return error.CreateDxgiSurfaceRenderTargetFailed;
         }
+        errdefer _ = render_target.IUnknown.Release();
 
-        // Set pixel unit mode
         const dc = try queryInterface(render_target, win32.ID2D1DeviceContext);
         defer _ = dc.IUnknown.Release();
         dc.SetUnitMode(win32.D2D1_UNIT_MODE_PIXELS);
@@ -117,6 +119,7 @@ pub const StagingTexture = struct {
             );
             if (hr < 0) return error.CreateBrushFailed;
         }
+        errdefer _ = white_brush.IUnknown.Release();
 
         self.cached = .{
             .size = size,

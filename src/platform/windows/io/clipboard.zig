@@ -67,3 +67,15 @@ pub fn pasteUtf16(utf16: [*:0]const u16, file: *const std.fs.File) !void {
         try file.writeAll(utf8_buf[0..len]);
     }
 }
+
+pub fn pasteFromClipboard(hwnd: win32.HWND, file: *const std.fs.File) !void {
+    if (win32.OpenClipboard(hwnd) == 0) return;
+    defer _ = win32.CloseClipboard();
+
+    const handle = win32.GetClipboardData(@intFromEnum(win32.CF_UNICODETEXT)) orelse return;
+    const hmem: isize = @bitCast(@intFromPtr(handle));
+    const mem: [*:0]const u16 = @ptrCast(@alignCast(win32.GlobalLock(hmem) orelse return));
+    defer globalUnlock(hmem);
+
+    try pasteUtf16(mem, file);
+}

@@ -2,7 +2,7 @@ const std = @import("std");
 const win32 = @import("win32").everything;
 const gvt = @import("vt");
 
-const log = std.log.scoped(.vt_handler);
+const log = std.log.scoped(.vthandler);
 
 pub const MiteHandler = struct {
     inner: gvt.ReadonlyHandler,

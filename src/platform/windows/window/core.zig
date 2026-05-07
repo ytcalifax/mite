@@ -1,7 +1,7 @@
 const std = @import("std");
 const win32 = @import("win32").everything;
-const Config = @import("../config/Config.zig").Config;
-const AppState = @import("../app/AppState.zig");
+const Config = @import("../../../config/config.zig").Config;
+const AppState = @import("../../../app/state.zig");
 
 const log = std.log.scoped(.window);
 

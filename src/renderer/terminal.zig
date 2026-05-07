@@ -3,13 +3,13 @@ const D3d11Renderer = @This();
 const std = @import("std");
 const vt = @import("vt");
 const win32 = @import("win32").everything;
-const GlyphCache = @import("glyph/GlyphCache.zig");
-const Config = @import("../config/Config.zig").Config;
-const TextLayout = @import("TextLayout.zig");
+const GlyphCache = @import("glyph/cache.zig");
+const Config = @import("../config/config.zig").Config;
+const TextLayout = @import("text/layout.zig");
 const d3d_core = @import("d3d11/core.zig");
 const types = @import("d3d11/types.zig");
-const ShaderCells = @import("d3d11/ShaderCells.zig").ShaderCells;
-const Texture = @import("d3d11/Texture.zig");
+const ShaderCells = @import("d3d11/shadercells.zig").ShaderCells;
+const Texture = @import("d3d11/texture.zig");
 
 const log = std.log.scoped(.terminal_renderer);
 
@@ -47,6 +47,9 @@ cell_size: win32.SIZE,
 cell_size_xy: types.CellXY,
 
 config: *const Config,
+default_fg: u24,
+default_bg: u24,
+cursor_color: u24,
 
 const scrollbar_logical_width: u16 = 14;
 
@@ -69,8 +72,9 @@ pub fn cellSizeForDpi(self: *D3d11Renderer, dpi: u32) win32.SIZE {
 
 pub fn init(dpi: u32, config: *const Config) !D3d11Renderer {
     const device, const context = try d3d_core.createDevice();
+    errdefer _ = context.IUnknown.Release();
+    errdefer _ = device.IUnknown.Release();
 
-    // Compile shaders
     const shader_source = @embedFile("../shaders/terminal.hlsl");
 
     const vs_blob = try d3d_core.compileShaderBlob(shader_source, "VertexMain", "vs_5_0");
@@ -85,6 +89,7 @@ pub fn init(dpi: u32, config: *const Config) !D3d11Renderer {
         );
         if (hr < 0) return error.VertexShaderCreationFailed;
     }
+    errdefer _ = vertex_shader.IUnknown.Release();
 
     const ps_blob = try d3d_core.compileShaderBlob(shader_source, "PixelMain", "ps_5_0");
     defer _ = ps_blob.IUnknown.Release();
@@ -98,8 +103,8 @@ pub fn init(dpi: u32, config: *const Config) !D3d11Renderer {
         );
         if (hr < 0) return error.PixelShaderCreationFailed;
     }
+    errdefer _ = pixel_shader.IUnknown.Release();
 
-    // Constant buffer
     var const_buf: *win32.ID3D11Buffer = undefined;
     {
         const desc: win32.D3D11_BUFFER_DESC = .{
@@ -113,8 +118,8 @@ pub fn init(dpi: u32, config: *const Config) !D3d11Renderer {
         const hr = device.CreateBuffer(&desc, null, &const_buf);
         if (hr < 0) return error.ConstantBufferCreationFailed;
     }
+    errdefer _ = const_buf.IUnknown.Release();
 
-    // DirectWrite
     var dwrite_factory: *win32.IDWriteFactory = undefined;
     {
         const hr = win32.DWriteCreateFactory(
@@ -124,16 +129,20 @@ pub fn init(dpi: u32, config: *const Config) !D3d11Renderer {
         );
         if (hr < 0) return error.DWriteFactoryCreationFailed;
     }
+    errdefer _ = dwrite_factory.IUnknown.Release();
 
     const text_format = try TextLayout.createTextFormat(dwrite_factory, dpi, config);
+    errdefer _ = text_format.IUnknown.Release();
 
     const cell_size = try TextLayout.measureCellSize(dwrite_factory, text_format);
     const cell_size_xy: types.CellXY = .{
         .x = @intCast(cell_size.cx),
         .y = @intCast(cell_size.cy),
     };
+    const default_fg = Config.parseColor(config.colors.foreground) catch 0xc8c4d0;
+    const default_bg = Config.parseColor(config.colors.background) catch 0x140f1a;
+    const cursor_color = Config.parseColor(config.colors.cursor) catch 0xffffff;
 
-    // Direct2D factory for glyph rendering
     var d2d_factory: *win32.ID2D1Factory = undefined;
     {
         const hr = win32.D2D1CreateFactory(
@@ -144,6 +153,7 @@ pub fn init(dpi: u32, config: *const Config) !D3d11Renderer {
         );
         if (hr < 0) return error.D2D1FactoryCreationFailed;
     }
+    errdefer _ = d2d_factory.IUnknown.Release();
 
     return .{
         .device = device,
@@ -161,6 +171,9 @@ pub fn init(dpi: u32, config: *const Config) !D3d11Renderer {
         .cell_size_xy = cell_size_xy,
         .dpi = dpi,
         .config = config,
+        .default_fg = default_fg,
+        .default_bg = default_bg,
+        .cursor_color = cursor_color,
     };
 }
 
@@ -286,10 +299,6 @@ pub fn render(
 
     const grid_w: u32 = client_w -| @as(u32, @intCast(scrollbarWidth(win32.dpiFromHwnd(hwnd))));
 
-    const default_fg = Config.parseColor(self.config.colors.foreground) catch 0xc8c4d0;
-    const default_bg = Config.parseColor(self.config.colors.background) catch 0x140f1a;
-    const cursor_color = Config.parseColor(self.config.colors.cursor) catch 0xffffff;
-
     const screen = term.screens.active;
 
     // Update constant buffer
@@ -312,9 +321,9 @@ pub fn render(
         grid_config.cell_size[1] = cs.y;
         grid_config.col_count = shader_col;
         grid_config.row_count = shader_row;
-        grid_config.background = types.Rgba8.fromU24(default_bg, 255);
-        grid_config.foreground = types.Rgba8.fromU24(default_fg, 255);
-        grid_config.cursor_color = types.Rgba8.fromU24(cursor_color, 255);
+        grid_config.background = types.Rgba8.fromU24(self.default_bg, 255);
+        grid_config.foreground = types.Rgba8.fromU24(self.default_fg, 255);
+        grid_config.cursor_color = types.Rgba8.fromU24(self.cursor_color, 255);
         grid_config.opacity = self.config.window.opacity;
         grid_config.cursor_x = if (screen.viewportIsBottom() and term.modes.get(.cursor_visible)) screen.cursor.x else 0xffff_ffff;
         grid_config.cursor_y = screen.cursor.y;
@@ -354,9 +363,9 @@ pub fn render(
     const cell_count = shader_col * shader_row;
     const blank_glyph = self.generateGlyph(.{ .codepoint = ' ', .half = .single });
     const bg_rgba: types.Rgba8 = .{
-        .r = @intCast((default_bg >> 16) & 0xFF),
-        .g = @intCast((default_bg >> 8) & 0xFF),
-        .b = @intCast(default_bg & 0xFF),
+        .r = @intCast((self.default_bg >> 16) & 0xFF),
+        .g = @intCast((self.default_bg >> 8) & 0xFF),
+        .b = @intCast(self.default_bg & 0xFF),
         .a = 0,
     };
 
@@ -406,13 +415,13 @@ pub fn render(
                 };
                 const codepoint: u21 = if (raw_cp == 0) ' ' else raw_cp;
 
-                var cell_fg: u24 = default_fg;
-                var cell_bg: u24 = default_bg;
+                var cell_fg: u24 = self.default_fg;
+                var cell_bg: u24 = self.default_bg;
 
                 if (cell.style_id != 0) {
                     const style = page.styles.get(page.memory, cell.style_id).*;
-                    cell_fg = resolveColor(style.fg_color, palette, default_fg);
-                    cell_bg = resolveColor(style.bg_color, palette, default_bg);
+                    cell_fg = resolveColor(style.fg_color, palette, self.default_fg);
+                    cell_bg = resolveColor(style.bg_color, palette, self.default_bg);
                     if (style.flags.inverse) {
                         const tmp = cell_fg;
                         cell_fg = cell_bg;
@@ -429,7 +438,7 @@ pub fn render(
                     else => {},
                 }
 
-                var bg = if (cell_bg == default_bg) bg_rgba else types.Rgba8.fromU24(cell_bg, 255);
+                var bg = if (cell_bg == self.default_bg) bg_rgba else types.Rgba8.fromU24(cell_bg, 255);
                 var fg = types.Rgba8.fromU24(cell_fg, 255);
 
                 // Highlight selected cells (with fade)

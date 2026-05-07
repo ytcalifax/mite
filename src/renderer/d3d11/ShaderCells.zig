@@ -21,6 +21,7 @@ pub const ShaderCells = struct {
             };
             const hr = device.CreateBuffer(&buf_desc, null, &self.cell_buf);
             if (hr < 0) return error.CreateCellBufferFailed;
+            errdefer _ = self.cell_buf.IUnknown.Release();
 
             const view_desc: win32.D3D11_SHADER_RESOURCE_VIEW_DESC = .{
                 .Format = .UNKNOWN,

@@ -38,6 +38,19 @@ pub const ReadPayload = struct {
     data: [4096]u8,
 };
 
+const PipePair = struct {
+    read: win32.HANDLE,
+    write: win32.HANDLE,
+
+    fn closeRead(self: PipePair) void {
+        win32.closeHandle(self.read);
+    }
+
+    fn closeWrite(self: PipePair) void {
+        win32.closeHandle(self.write);
+    }
+};
+
 pub const ChildProcess = struct {
     pty: ?Pty,
     job: win32.HANDLE,
@@ -66,54 +79,41 @@ pub const ChildProcess = struct {
         generation: u32,
         cell_count: GridPos,
     ) error{Error}!ChildProcess {
-        var sec_attr: win32.SECURITY_ATTRIBUTES = .{
-            .nLength = @sizeOf(win32.SECURITY_ATTRIBUTES),
-            .bInheritHandle = 1,
-            .lpSecurityDescriptor = null,
-        };
+        const input_pipe = try createPipe(out_err, "CreateInputPipe");
+        var input_read_open = true;
+        defer if (input_read_open) input_pipe.closeRead();
+        errdefer input_pipe.closeWrite();
 
-        var pty_read: win32.HANDLE = undefined;
-        var our_write: win32.HANDLE = undefined;
-        if (0 == win32.CreatePipe(@ptrCast(&pty_read), @ptrCast(&our_write), &sec_attr, 0)) return out_err.setWin32(
-            "CreateInputPipe",
-            win32.GetLastError(),
-        );
-        var pty_handles_closed = false;
-        defer if (!pty_handles_closed) win32.closeHandle(pty_read);
-        errdefer win32.closeHandle(our_write);
+        const output_pipe = try createPipe(out_err, "CreateOutputPipe");
+        var output_read_owned_by_thread = false;
+        var output_write_open = true;
+        errdefer if (!output_read_owned_by_thread) output_pipe.closeRead();
+        errdefer if (output_write_open) output_pipe.closeWrite();
 
-        var our_read: win32.HANDLE = undefined;
-        var pty_write: win32.HANDLE = undefined;
-        if (0 == win32.CreatePipe(@ptrCast(&our_read), @ptrCast(&pty_write), &sec_attr, 0)) return out_err.setWin32(
-            "CreateOutputPipe",
-            win32.GetLastError(),
-        );
-        var our_read_owned_by_thread = false;
-        errdefer if (!our_read_owned_by_thread) win32.closeHandle(our_read);
-
-        try setInherit(out_err, our_write, false);
-        try setInherit(out_err, our_read, false);
+        try setInherit(out_err, input_pipe.write, false);
+        try setInherit(out_err, output_pipe.read, false);
 
         const thread = std.Thread.spawn(
             .{},
             readConsoleThread,
-            .{ hwnd, hwnd_msg, generation, our_read },
+            .{ hwnd, hwnd_msg, generation, output_pipe.read },
         ) catch |e| return out_err.setZig("CreateReadConsoleThread", e);
         thread.detach();
-        our_read_owned_by_thread = true;
+        output_read_owned_by_thread = true;
 
         var hpcon: win32.HPCON = undefined;
         {
             const hr = win32.CreatePseudoConsole(
                 .{ .X = @intCast(cell_count.col), .Y = @intCast(cell_count.row) },
-                pty_read,
-                pty_write,
+                input_pipe.read,
+                output_pipe.write,
                 0,
                 @ptrCast(&hpcon),
             );
-            win32.closeHandle(pty_read);
-            win32.closeHandle(pty_write);
-            pty_handles_closed = true;
+            input_pipe.closeRead();
+            output_pipe.closeWrite();
+            input_read_open = false;
+            output_write_open = false;
             if (hr < 0) return out_err.setHresult("CreatePseudoConsole", hr);
         }
         errdefer _ = win32.ClosePseudoConsole(hpcon);
@@ -216,7 +216,7 @@ pub const ChildProcess = struct {
 
         return .{
             .pty = .{
-                .write = .{ .handle = our_write },
+                .write = .{ .handle = input_pipe.write },
                 .hpcon = hpcon,
             },
             .job = job,
@@ -252,6 +252,21 @@ pub const ChildProcess = struct {
             "SetHandleInformation",
             win32.GetLastError(),
         );
+    }
+
+    fn createPipe(out_err: *Error, what: [:0]const u8) error{Error}!PipePair {
+        var security_attributes: win32.SECURITY_ATTRIBUTES = .{
+            .nLength = @sizeOf(win32.SECURITY_ATTRIBUTES),
+            .bInheritHandle = 1,
+            .lpSecurityDescriptor = null,
+        };
+
+        var read: win32.HANDLE = undefined;
+        var write: win32.HANDLE = undefined;
+        if (0 == win32.CreatePipe(@ptrCast(&read), @ptrCast(&write), &security_attributes, 0)) {
+            return out_err.setWin32(what, win32.GetLastError());
+        }
+        return .{ .read = read, .write = write };
     }
 
     fn readConsoleThread(

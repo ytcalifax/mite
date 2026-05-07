@@ -1,5 +1,34 @@
 const std = @import("std");
-const builtin = @import("builtin");
+
+const default_config_json =
+    \\{
+    \\  "font": {
+    \\    "size": 14.0,
+    \\    "names": ["Consolas 7NF", "Consolas"]
+    \\  },
+    \\  "colors": {
+    \\    "foreground": "0xc8c4d0",
+    \\    "background": "0x140f1a",
+    \\    "cursor": "0xffffff"
+    \\  },
+    \\  "cursor": {
+    \\    "style": "pipe",
+    \\    "blink": true,
+    \\    "fade_in": 400,
+    \\    "fade_out": 400
+    \\  },
+    \\  "shell": {
+    \\    "program": "cmd.exe",
+    \\    "args": []
+    \\  },
+    \\  "window": {
+    \\    "opacity": 0.94
+    \\  },
+    \\  "tabs": {
+    \\    "switcher_location": "top_right"
+    \\  }
+    \\}
+;
 
 pub const CursorStyle = enum {
     block,
@@ -53,6 +82,29 @@ pub const Config = struct {
     };
 
     pub fn load(allocator: std.mem.Allocator) !Config {
+        const config_path = try configPath(allocator);
+        defer allocator.free(config_path);
+
+        const content = content: {
+            const file = std.fs.openFileAbsolute(config_path, .{}) catch |err| {
+                if (err != error.FileNotFound) return err;
+                var new_file = try std.fs.createFileAbsolute(config_path, .{});
+                defer new_file.close();
+                try new_file.writeAll(default_config_json);
+                break :content try allocator.dupe(u8, default_config_json);
+            };
+            defer file.close();
+            break :content try file.readToEndAlloc(allocator, 1024 * 1024);
+        };
+        defer allocator.free(content);
+
+        var parsed = try std.json.parseFromSlice(Config, allocator, content, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        return try cloneParsedConfig(allocator, parsed.value);
+    }
+
+    fn configPath(allocator: std.mem.Allocator) ![]u8 {
         const home = std.process.getEnvVarOwned(allocator, "USERPROFILE") catch |err| {
             if (err == error.EnvironmentVariableNotFound) {
                 return error.HomeNotFound;
@@ -63,95 +115,40 @@ pub const Config = struct {
 
         const config_dir = try std.fs.path.join(allocator, &[_][]const u8{ home, ".config", "mite" });
         defer allocator.free(config_dir);
-
         try std.fs.cwd().makePath(config_dir);
 
-        const config_path = try std.fs.path.join(allocator, &[_][]const u8{ config_dir, "config.json" });
-        defer allocator.free(config_path);
+        return std.fs.path.join(allocator, &[_][]const u8{ config_dir, "config.json" });
+    }
 
-        const file = std.fs.openFileAbsolute(config_path, .{}) catch |err| {
-            if (err == error.FileNotFound) {
-                const default_config =
-                    \\{
-                    \\  "font": {
-                    \\    "size": 14.0,
-                    \\    "names": ["Consolas 7NF", "Consolas"]
-                    \\  },
-                    \\  "colors": {
-                    \\    "foreground": "0xc8c4d0",
-                    \\    "background": "0x140f1a",
-                    \\    "cursor": "0xffffff"
-                    \\  },
-                    \\  "cursor": {
-                    \\    "style": "pipe",
-                    \\    "blink": true,
-                    \\    "fade_in": 400,
-                    \\    "fade_out": 400
-                    \\  },
-                    \\  "shell": {
-                    \\    "program": "cmd.exe",
-                    \\    "args": []
-                    \\  },
-                    \\  "window": {
-                    \\    "opacity": 0.94
-                    \\  },
-                    \\  "tabs": {
-                    \\    "switcher_location": "top_right"
-                    \\  }
-                    \\}
-                ;
-                var new_file = try std.fs.createFileAbsolute(config_path, .{});
-                defer new_file.close();
-                try new_file.writeAll(default_config);
-                return try load(allocator);
-            }
-            return err;
-        };
-        defer file.close();
+    fn cloneParsedConfig(allocator: std.mem.Allocator, parsed: Config) !Config {
+        var result = parsed;
 
-        const content = try file.readToEndAlloc(allocator, 1024 * 1024);
-        defer allocator.free(content);
-
-        var parsed = try std.json.parseFromSlice(Config, allocator, content, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        var result = parsed.value;
-
-        // Colors
-        result.colors.foreground = try allocator.dupe(u8, parsed.value.colors.foreground);
+        result.colors.foreground = try allocator.dupe(u8, parsed.colors.foreground);
         errdefer allocator.free(result.colors.foreground);
-        result.colors.background = try allocator.dupe(u8, parsed.value.colors.background);
+        result.colors.background = try allocator.dupe(u8, parsed.colors.background);
         errdefer allocator.free(result.colors.background);
-        result.colors.cursor = try allocator.dupe(u8, parsed.value.colors.cursor);
+        result.colors.cursor = try allocator.dupe(u8, parsed.colors.cursor);
         errdefer allocator.free(result.colors.cursor);
 
-        // Shell
-        result.shell.program = try allocator.dupe(u8, parsed.value.shell.program);
+        result.shell.program = try allocator.dupe(u8, parsed.shell.program);
         errdefer allocator.free(result.shell.program);
+        result.shell.args = try cloneStringList(allocator, parsed.shell.args);
+        result.font.names = try cloneStringList(allocator, parsed.font.names);
 
-        const args = try allocator.alloc([]const u8, parsed.value.shell.args.len);
-        errdefer allocator.free(args);
-        var arg_idx: usize = 0;
-        errdefer {
-            for (0..arg_idx) |j| allocator.free(args[j]);
-        }
-        while (arg_idx < parsed.value.shell.args.len) : (arg_idx += 1) {
-            args[arg_idx] = try allocator.dupe(u8, parsed.value.shell.args[arg_idx]);
-        }
-        result.shell.args = args;
+        return result;
+    }
 
-        // Font names
-        const names = try allocator.alloc([]const u8, parsed.value.font.names.len);
-        errdefer allocator.free(names);
+    fn cloneStringList(allocator: std.mem.Allocator, source: []const []const u8) ![][]const u8 {
+        const result = try allocator.alloc([]const u8, source.len);
+        errdefer allocator.free(result);
+
         var i: usize = 0;
         errdefer {
-            for (0..i) |j| allocator.free(names[j]);
+            for (result[0..i]) |item| allocator.free(item);
         }
-        while (i < parsed.value.font.names.len) : (i += 1) {
-            names[i] = try allocator.dupe(u8, parsed.value.font.names[i]);
+        while (i < source.len) : (i += 1) {
+            result[i] = try allocator.dupe(u8, source[i]);
         }
-        result.font.names = names;
-
         return result;
     }
 
@@ -184,3 +181,14 @@ pub const Config = struct {
         }
     }
 };
+
+test "parseColor accepts supported prefixes" {
+    try std.testing.expectEqual(@as(u24, 0x123456), try Config.parseColor("0x123456"));
+    try std.testing.expectEqual(@as(u24, 0xabcdef), try Config.parseColor("#abcdef"));
+    try std.testing.expectEqual(@as(u24, 0x010203), try Config.parseColor("010203"));
+}
+
+test "cursor alpha stays visible when blinking is disabled or duration is zero" {
+    try std.testing.expectEqual(@as(f32, 1.0), Config.calculateCursorAlpha(200, .{ .cursor = .{ .blink = false } }));
+    try std.testing.expectEqual(@as(f32, 1.0), Config.calculateCursorAlpha(200, .{ .cursor = .{ .fade_in = 0, .fade_out = 0 } }));
+}

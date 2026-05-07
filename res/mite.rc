@@ -1,5 +1,5 @@
 #include <windows.h>
-#include "ResourceNames.h"
+#include "resourcenames.h"
 
 // LANG_NEUTRAL(0), SUBLANG_NEUTRAL(0)
 LANGUAGE 0, 0

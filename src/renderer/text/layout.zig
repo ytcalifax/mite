@@ -1,6 +1,6 @@
 const std = @import("std");
 const win32 = @import("win32").everything;
-const Config = @import("../config/Config.zig").Config;
+const Config = @import("../../config/config.zig").Config;
 
 const log = std.log.scoped(.text_layout);
 

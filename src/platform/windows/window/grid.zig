@@ -1,3 +1,4 @@
+const std = @import("std");
 const win32 = @import("win32").everything;
 const TerminalRenderer = @import("../../../renderer/terminal.zig");
 const pty = @import("../process/pty.zig");

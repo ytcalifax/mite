@@ -35,14 +35,3 @@ fn appendQuotedArg(list: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocat
     try list.appendNTimes(allocator, '\\', backslashes * 2);
     try list.append(allocator, '"');
 }
-
-test "make quotes program and arguments for CreateProcess command lines" {
-    const allocator = std.testing.allocator;
-    const command_line = try make(allocator, "C:\\Program Files\\shell.exe", &.{ "arg with spaces", "quote\"here", "tail\\" });
-    defer allocator.free(command_line);
-
-    try std.testing.expectEqualStrings(
-        "\"C:\\Program Files\\shell.exe\" \"arg with spaces\" \"quote\\\"here\" \"tail\\\\\"",
-        command_line,
-    );
-}

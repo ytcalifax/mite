@@ -40,7 +40,7 @@ pub fn build(b: *std.Build) void {
 
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
+            .root_source_file = b.path("src/tests.zig"),
             .target = target,
             .optimize = optimize,
         }),
@@ -53,6 +53,10 @@ pub fn build(b: *std.Build) void {
 
     const run_tests = b.addRunArtifact(tests);
     b.step("test", "Run unit tests").dependOn(&run_tests.step);
+
+    const check = b.step("check", "Compile mite and run unit tests");
+    check.dependOn(&exe.step);
+    check.dependOn(&run_tests.step);
 }
 
 const std = @import("std");

@@ -34,7 +34,7 @@ test "bounds supports bottom and right aligned switcher locations" {
     const b = Switcher.bounds(client_size, 250, 3, .bottom_right);
 
     try std.testing.expectEqual(@as(f32, 178.0), b.x);
-    try std.testing.expectEqual(@as(f32, 70.0), b.y);
+    try std.testing.expectEqual(@as(f32, 76.0), b.y);
     try std.testing.expectEqual(@as(f32, 64.0), b.width);
-    try std.testing.expectEqual(@as(f32, 30.0), b.height);
+    try std.testing.expectEqual(@as(f32, 24.0), b.height);
 }

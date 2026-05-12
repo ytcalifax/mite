@@ -8,7 +8,7 @@ pub const MIN_COLS = 40;
 pub const MIN_ROWS = 10;
 pub const MAX_COLS = 1000;
 pub const MAX_ROWS = 1000;
-pub const Y_PADDING = 30;
+pub const Y_PADDING = 2;
 
 pub const PlacementOptions = struct {
     left: ?i32 = null,

@@ -7,7 +7,7 @@ const config = @import("../../config/config.zig");
 const tab_width: f32 = 16.0;
 const tab_spacing: f32 = 8.0;
 const margin: f32 = 8.0;
-const height: f32 = 30.0;
+const height: f32 = 24.0;
 
 pub const Bounds = struct {
     x: f32,

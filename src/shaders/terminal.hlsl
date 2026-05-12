@@ -70,9 +70,9 @@ float4 PixelMain(float4 sv_pos : SV_POSITION) : SV_TARGET {
     // 3. Tabs (Bookmarks) rendering
     bool tabs_on_left = (tab_position == 0 || tab_position == 2);
     bool tabs_on_bottom = (tab_position == 2 || tab_position == 3);
-    float tab_area_y = tabs_on_bottom ? max(0.0, (float)viewport_height - 30.0) : 0.0;
+    float tab_area_y = tabs_on_bottom ? max(0.0, (float)viewport_height - 24.0) : 0.0;
 
-    if (sv_pos.y >= tab_area_y && sv_pos.y < tab_area_y + 30.0) {
+    if (sv_pos.y >= tab_area_y && sv_pos.y < tab_area_y + 24.0) {
         float tab_w = 16.0;
         float spacing = 8.0;
         float total_tabs = tab_count + 1.0;
@@ -124,7 +124,7 @@ float4 PixelMain(float4 sv_pos : SV_POSITION) : SV_TARGET {
     }
 
     // 5. Cell grid logic
-    float grid_y_offset = tabs_on_bottom ? 0.0 : 30.0;
+    float grid_y_offset = 0.0;
     uint col = sv_pos.x / cell_size.x;
     uint row = (sv_pos.y - grid_y_offset) / cell_size.y;
     if (col >= col_count || row >= row_count || sv_pos.y < grid_y_offset) return float4(dynamic_bg * opacity, opacity);

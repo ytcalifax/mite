@@ -61,6 +61,7 @@ fn currentWindowGrid(hwnd: win32.HWND) pty.GridPos {
 }
 
 fn activateTab(state: *AppState.State, index: usize) void {
+    const changed = state.active_tab_index != index;
     state.active_tab_index = index;
     const result = TerminalResizer.resizeActiveTab(
         global.term_arena.allocator(),
@@ -68,7 +69,7 @@ fn activateTab(state: *AppState.State, index: usize) void {
         currentWindowGrid(state.hwnd),
         true,
     );
-    if (result.paint) invalidateWithCells(state.hwnd);
+    if (changed or result.paint) invalidateWithCells(state.hwnd);
 }
 
 fn getTabAtMouse(hwnd: win32.HWND, x: i32, y: i32) i32 {
@@ -200,14 +201,9 @@ fn handleShortcut(hwnd: win32.HWND, state: *AppState.State, wparam: win32.WPARAM
 }
 
 fn mousePosToGrid(mouse_x: i32, mouse_y: i32, cs: win32.SIZE) struct { col: usize, row: usize } {
-    const tabs_on_bottom = switch (global.config.tabs.switcher_location) {
-        .bottom_left, .bottom_right => true,
-        else => false,
-    };
-    const offset_y = if (tabs_on_bottom) @as(i32, 0) else @as(i32, @intCast(windowgrid.Y_PADDING));
     return .{
         .col = @intCast(@divTrunc(@max(mouse_x, 0), cs.cx)),
-        .row = @intCast(@divTrunc(@max(mouse_y - offset_y, 0), cs.cy)),
+        .row = @intCast(@divTrunc(@max(mouse_y, 0), cs.cy)),
     };
 }
 

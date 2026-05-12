@@ -256,6 +256,7 @@ pub fn render(
     tab_count: u32,
     active_tab_index: u32,
     tab_hover_index: i32,
+    tab_expansions: []const f32,
     rebuild_cells: bool,
 ) void {
     const sz = win32.getClientSize(hwnd);
@@ -367,7 +368,9 @@ pub fn render(
         grid_config.tab_hover_index = tab_hover_index;
         grid_config.tab_position = @intFromEnum(self.config.tabs.switcher_location);
         grid_config.viewport_height = client_h;
-        grid_config.padding = .{ 0, 0, 0 };
+        @memset(&grid_config.tab_expansions, 0);
+        const copy_len = @min(tab_expansions.len, grid_config.tab_expansions.len);
+        @memcpy(grid_config.tab_expansions[0..copy_len], tab_expansions[0..copy_len]);
     }
 
     // Build cell buffer from terminal state

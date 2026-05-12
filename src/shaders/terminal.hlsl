@@ -21,6 +21,7 @@ cbuffer GridConfig : register(b0)
     uint tab_position;
     uint viewport_height;
     uint3 padding;
+    float4 tab_expansions[25];
 }
 
 struct Cell
@@ -88,7 +89,9 @@ float4 PixelMain(float4 sv_pos : SV_POSITION) : SV_TARGET {
             if (tab_idx < (uint)total_tabs && x_in_tab < tab_w) {
                 bool is_plus = (tab_idx == (uint)tab_count);
                 bool active = !is_plus && (tab_idx == active_tab_index);
-                float tab_height = active ? 24.0 : 16.0;
+                
+                float expansion = tab_expansions[tab_idx / 4][tab_idx % 4];
+                float tab_height = lerp(4.0, 24.0, expansion);
                 
                 if (tab_local_y < tab_height) {
                     float3 tab_color = active ? float3(1.0, 0.72, 0.0) : lerp(dynamic_bg, float3(1,1,1), 0.2);

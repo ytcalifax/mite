@@ -22,8 +22,10 @@ const WM_APP_CHILD_PROCESS_DATA_RESULT = 0x12345678;
 const TIMER_CURSOR = 1;
 const TIMER_SELECTION_FADE = 2;
 const TIMER_PTY_PAINT = 3;
+const TIMER_TAB_ANIMATION = 4;
 const CURSOR_TIMER_MS = 33;
 const PTY_PAINT_COALESCE_MS = 8;
+const TAB_ANIMATION_MS = 16;
 
 pub const global = struct {
     pub var icons: IconResources.Pair = undefined;
@@ -42,6 +44,7 @@ pub const global = struct {
     var scrollbar_drag_offset: f32 = 0.0;
     var selection_fade: f32 = 0.0;
     var tab_hover_index: i32 = -1;
+    var tab_expansions: [100]f32 = [_]f32{0.0} ** 100;
     var cell_buffer_dirty: bool = true;
     var pty_paint_pending: bool = false;
 };
@@ -396,6 +399,7 @@ pub fn proc(
             const new_hover = getTabAtMouse(hwnd, mouse_x, mouse_y);
             if (new_hover != global.tab_hover_index) {
                 global.tab_hover_index = new_hover;
+                _ = win32.SetTimer(hwnd, TIMER_TAB_ANIMATION, TAB_ANIMATION_MS, null);
                 win32.invalidateHwnd(hwnd);
             }
 
@@ -439,6 +443,7 @@ pub fn proc(
         win32.WM_MOUSELEAVE => {
             global.tracking_mouse = false;
             global.tab_hover_index = -1;
+            _ = win32.SetTimer(hwnd, TIMER_TAB_ANIMATION, TAB_ANIMATION_MS, null);
             if (global.mouse_in_scrollbar) {
                 global.mouse_in_scrollbar = false;
                 win32.invalidateHwnd(hwnd);
@@ -535,6 +540,8 @@ pub fn proc(
                     @intCast(idx)
                 else
                     -1;
+            } else if (global.tab_hover_index == -2) {
+                visible_hover_idx = @intCast(tab_count);
             }
 
             const rebuild_cells = global.cell_buffer_dirty or
@@ -551,6 +558,7 @@ pub fn proc(
                 tab_count,
                 visible_active_idx,
                 visible_hover_idx,
+                &global.tab_expansions,
                 rebuild_cells,
             );
             global.cell_buffer_dirty = false;
@@ -674,6 +682,37 @@ pub fn proc(
             } else if (wparam == TIMER_PTY_PAINT) {
                 global.pty_paint_pending = false;
                 _ = win32.KillTimer(hwnd, TIMER_PTY_PAINT);
+                win32.invalidateHwnd(hwnd);
+            } else if (wparam == TIMER_TAB_ANIMATION) {
+                const state = stateFromHwnd(hwnd);
+                const tab_count: u32 = @intCast(state.tabCount());
+                var visible_hover_idx: i32 = -1;
+                if (global.tab_hover_index >= 0) {
+                    if (state.visibleIndexOf(@intCast(global.tab_hover_index))) |idx| {
+                        visible_hover_idx = @intCast(idx);
+                    }
+                } else if (global.tab_hover_index == -2) {
+                    visible_hover_idx = @intCast(tab_count);
+                }
+
+                var any_animating = false;
+                for (0..tab_count + 1) |i| {
+                    if (i >= 100) break;
+                    const target: f32 = if (@as(i32, @intCast(i)) == visible_hover_idx) 1.0 else 0.0;
+                    const expansion = &global.tab_expansions[i];
+                    if (expansion.* != target) {
+                        const step: f32 = 0.15;
+                        if (expansion.* < target) {
+                            expansion.* = @min(expansion.* + step, target);
+                        } else {
+                            expansion.* = @max(expansion.* - step, target);
+                        }
+                        any_animating = true;
+                    }
+                }
+                if (!any_animating) {
+                    _ = win32.KillTimer(hwnd, TIMER_TAB_ANIMATION);
+                }
                 win32.invalidateHwnd(hwnd);
             }
             return 0;

@@ -38,6 +38,7 @@ pub const GridConfig = extern struct {
     tab_position: u32,
     viewport_height: u32,
     padding: [3]u32,
+    tab_expansions: [100]f32,
 };
 
 pub const Cell = extern struct {

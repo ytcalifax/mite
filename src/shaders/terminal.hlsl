@@ -124,9 +124,10 @@ float4 PixelMain(float4 sv_pos : SV_POSITION) : SV_TARGET {
     }
 
     // 5. Cell grid logic
+    float grid_y_offset = tabs_on_bottom ? 0.0 : 30.0;
     uint col = sv_pos.x / cell_size.x;
-    uint row = sv_pos.y / cell_size.y;
-    if (col >= col_count || row >= row_count) return float4(dynamic_bg * opacity, opacity);
+    uint row = (sv_pos.y - grid_y_offset) / cell_size.y;
+    if (col >= col_count || row >= row_count || sv_pos.y < grid_y_offset) return float4(dynamic_bg * opacity, opacity);
     uint cell_index = row * col_count + col;
 
     Cell cell = cells[cell_index];
@@ -141,7 +142,7 @@ float4 PixelMain(float4 sv_pos : SV_POSITION) : SV_TARGET {
         cell.glyph_index % cells_per_row,
         cell.glyph_index / cells_per_row
     );
-    uint2 cell_pixel = uint2(sv_pos.xy) % cell_size;
+    uint2 cell_pixel = uint2(sv_pos.x, sv_pos.y - grid_y_offset) % cell_size;
     uint2 texture_coord = glyph_cell_pos * cell_size + cell_pixel;
     float4 glyph_texel = glyph_texture.Load(int3(texture_coord, 0));
 

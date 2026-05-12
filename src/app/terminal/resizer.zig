@@ -28,7 +28,7 @@ pub const SizePolicy = struct {
 
     pub fn onSystemCommand(self: *SizePolicy, command: win32.WPARAM) void {
         switch (command) {
-            win32.SC_MINIMIZE, win32.SC_MAXIMIZE => self.reflow_suppressed = true,
+            win32.SC_MINIMIZE => self.reflow_suppressed = true,
             else => {},
         }
     }
@@ -48,8 +48,8 @@ pub const SizePolicy = struct {
 
         switch (size_kind) {
             win32.SIZE_MAXIMIZED => {
-                self.reflow_suppressed = true;
-                return false;
+                self.reflow_suppressed = false;
+                return true;
             },
             win32.SIZE_RESTORED => {
                 if (self.suppress_next_restored) {

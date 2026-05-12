@@ -199,6 +199,18 @@ fn handleShortcut(hwnd: win32.HWND, state: *AppState.State, wparam: win32.WPARAM
     return false;
 }
 
+fn mousePosToGrid(mouse_x: i32, mouse_y: i32, cs: win32.SIZE) struct { col: usize, row: usize } {
+    const tabs_on_bottom = switch (global.config.tabs.switcher_location) {
+        .bottom_left, .bottom_right => true,
+        else => false,
+    };
+    const offset_y = if (tabs_on_bottom) @as(i32, 0) else @as(i32, @intCast(windowgrid.Y_PADDING));
+    return .{
+        .col = @intCast(@divTrunc(@max(mouse_x, 0), cs.cx)),
+        .row = @intCast(@divTrunc(@max(mouse_y - offset_y, 0), cs.cy)),
+    };
+}
+
 pub fn proc(
     hwnd: win32.HWND,
     msg: u32,
@@ -307,9 +319,8 @@ pub fn proc(
                 global.selection_fade = 0;
                 _ = win32.KillTimer(hwnd, TIMER_SELECTION_FADE);
                 const cs = global.renderer.cell_size;
-                const col: usize = @intCast(@divTrunc(@max(mouse_x, 0), cs.cx));
-                const row: usize = @intCast(@divTrunc(@max(mouse_y, 0), cs.cy));
-                if (screen.pages.pin(.{ .viewport = .{ .x = @intCast(col), .y = @intCast(row) } })) |pin| {
+                const pos = mousePosToGrid(mouse_x, mouse_y, cs);
+                if (screen.pages.pin(.{ .viewport = .{ .x = @intCast(pos.col), .y = @intCast(pos.row) } })) |pin| {
                     screen.clearSelection();
                     const sel = gvt.Selection.init(pin, pin, false);
                     screen.select(sel) catch |e| log.err("screen.select failed: {any}", .{e});
@@ -412,9 +423,8 @@ pub fn proc(
                     const cs = global.renderer.cell_size;
                     const clamped_x: i32 = @max(0, @min(mouse_x, grid_w - 1));
                     const clamped_y: i32 = @max(0, @min(mouse_y, client_size.cy - 1));
-                    const col: usize = @intCast(@divTrunc(clamped_x, cs.cx));
-                    const row: usize = @intCast(@divTrunc(clamped_y, cs.cy));
-                    if (screen.pages.pin(.{ .viewport = .{ .x = @intCast(col), .y = @intCast(row) } })) |pin| {
+                    const pos = mousePosToGrid(clamped_x, clamped_y, cs);
+                    if (screen.pages.pin(.{ .viewport = .{ .x = @intCast(pos.col), .y = @intCast(pos.row) } })) |pin| {
                         if (screen.selection) |*sel| {
                             sel.endPtr().* = pin;
                             invalidateWithCells(hwnd);

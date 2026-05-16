@@ -137,7 +137,7 @@ fn resizeTerminalShell(term_allocator: std.mem.Allocator, tab: *AppState.Tab, gr
             .cols = grid.col,
             .rows = grid.row,
             .reflow = tab.term.modes.get(.wraparound),
-            .prompt_redraw = tab.term.flags.shell_redraws_prompt,
+            .prompt_redraw = .false,
         });
     }
 
@@ -177,7 +177,7 @@ fn applyDeferredPrimaryResize(term_allocator: std.mem.Allocator, tab: *AppState.
         .cols = grid.col,
         .rows = grid.row,
         .reflow = tab.term.modes.get(.wraparound),
-        .prompt_redraw = tab.term.flags.shell_redraws_prompt,
+        .prompt_redraw = .false,
     }) catch |err| {
         log.err("deferred primary resize failed: {any}", .{err});
         return;

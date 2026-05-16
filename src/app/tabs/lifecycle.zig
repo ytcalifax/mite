@@ -10,6 +10,8 @@ const windowscommandline = @import("../../platform/windows/process/commandline.z
 
 const log = std.log.scoped(.tab_lifecycle);
 
+const max_scrollback_bytes = 512 * 1024 * 1024;
+
 pub const Context = struct {
     gpa: std.mem.Allocator,
     term_allocator: std.mem.Allocator,
@@ -64,6 +66,7 @@ pub fn createTab(ctx: Context, state: *AppState.State, grid: pty.GridPos) !void 
     term.* = try gvt.Terminal.init(ctx.term_allocator, .{
         .cols = grid.col,
         .rows = grid.row,
+        .max_scrollback = max_scrollback_bytes,
     });
     errdefer term.deinit(ctx.term_allocator);
 

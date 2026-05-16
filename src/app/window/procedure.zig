@@ -47,6 +47,7 @@ pub const global = struct {
     var tab_expansions: [100]f32 = [_]f32{0.0} ** 100;
     var cell_buffer_dirty: bool = true;
     var pty_paint_pending: bool = false;
+    var pending_live_resize_grid: ?pty.GridPos = null;
 };
 
 fn switchTab(state: *AppState.State, index: usize) void {
@@ -459,9 +460,24 @@ pub fn proc(
             global.size_policy.onSystemCommand(command);
             return win32.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
+        win32.WM_ENTERSIZEMOVE => {
+            global.resizing = true;
+            global.pending_live_resize_grid = null;
+            invalidateWithCells(hwnd);
+            return 0;
+        },
         win32.WM_EXITSIZEMOVE => {
             global.resizing = false;
-            invalidateWithCells(hwnd);
+            const state = stateFromHwnd(hwnd);
+            const grid = global.pending_live_resize_grid orelse currentWindowGrid(hwnd);
+            global.pending_live_resize_grid = null;
+            const result = TerminalResizer.resizeActiveTab(
+                global.term_arena.allocator(),
+                state.activeTab(),
+                grid,
+                true,
+            );
+            if (result.paint) invalidateWithCells(hwnd) else win32.invalidateHwnd(hwnd);
             return 0;
         },
         win32.WM_SIZING => {
@@ -510,6 +526,15 @@ pub fn proc(
                 global.renderer.cell_size,
                 win32.GetDpiForWindow(hwnd),
             );
+
+            if (global.resizing and
+                state.activeTab().term.screens.active_key == .primary)
+            {
+                // Keep scrollback stable during live drags; apply one PTY resize on WM_EXITSIZEMOVE.
+                global.pending_live_resize_grid = grid;
+                win32.invalidateHwnd(hwnd);
+                return 0;
+            }
 
             const notify_pty = global.size_policy.shouldNotifyPty(state.activeTab(), wparam);
             const result = TerminalResizer.resizeActiveTab(

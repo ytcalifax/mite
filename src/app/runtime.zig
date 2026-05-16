@@ -29,8 +29,8 @@ pub fn run() !void {
     };
 
     const opt: windowgrid.PlacementOptions = .{
-        .width = @as(u32, @intFromFloat(Procedure.global.config.font.size * 50)),
-        .height = @as(u32, @intFromFloat(Procedure.global.config.font.size * 30)),
+        .columns = 137,
+        .rows = 32,
     };
 
     const maybe_monitor: ?win32.HMONITOR = win32.MonitorFromPoint(.{ .x = 0, .y = 0 }, win32.MONITOR_DEFAULTTOPRIMARY);
